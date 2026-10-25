@@ -17,7 +17,9 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <map>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@ struct Unit {
     float hp = 100.0f;
     float max_hp = 100.0f;
     int team = 0;
+    bool dead = false;
 };
 
 struct World {
@@ -47,6 +50,7 @@ struct World {
     int tick = 0;
     float elapsed = 0.0f;
     int on_tick_ref = LUA_NOREF;
+    int on_intent_ref = LUA_NOREF;
 
     Unit* find(std::uint16_t id) {
         for (auto& unit : units) {
@@ -136,6 +140,44 @@ int world_unit(lua_State* state) {
     return 1;
 }
 
+int world_damage(lua_State* state) {
+    World& world = world_from(state);
+    const auto id = static_cast<std::uint16_t>(luaL_checkinteger(state, 1));
+    const float amount = static_cast<float>(luaL_checknumber(state, 2));
+    if (Unit* unit = world.find(id)) {
+        unit->hp = std::max(0.0f, unit->hp - amount);
+        if (unit->hp <= 0.0f) unit->dead = true;
+        lua_pushnumber(state, unit->hp);
+        return 1;
+    }
+    lua_pushnumber(state, 0.0);
+    return 1;
+}
+
+int world_remove(lua_State* state) {
+    World& world = world_from(state);
+    const auto id = static_cast<std::uint16_t>(luaL_checkinteger(state, 1));
+    world.units.erase(std::remove_if(world.units.begin(), world.units.end(),
+                                     [&](const Unit& unit) { return unit.id == id; }),
+                      world.units.end());
+    return 0;
+}
+
+int world_time(lua_State* state) {
+    World& world = world_from(state);
+    lua_pushnumber(state, world.elapsed);
+    return 1;
+}
+
+int world_on_intent(lua_State* state) {
+    World& world = world_from(state);
+    luaL_checktype(state, 1, LUA_TFUNCTION);
+    lua_pushvalue(state, 1);
+    if (world.on_intent_ref != LUA_NOREF) luaL_unref(state, LUA_REGISTRYINDEX, world.on_intent_ref);
+    world.on_intent_ref = luaL_ref(state, LUA_REGISTRYINDEX);
+    return 0;
+}
+
 int world_count(lua_State* state) {
     World& world = world_from(state);
     lua_pushinteger(state, static_cast<lua_Integer>(world.units.size()));
@@ -160,7 +202,8 @@ void register_world(lua_State* state, World& world) {
     static const luaL_Reg functions[] = {
         {"spawn", world_spawn}, {"set_hp", world_set_hp},       {"move", world_move},
         {"unit", world_unit},   {"count", world_count},         {"log", world_log},
-        {"on_tick", world_on_tick}, {nullptr, nullptr},
+        {"on_tick", world_on_tick}, {"damage", world_damage},   {"remove", world_remove},
+        {"time", world_time},       {"on_intent", world_on_intent}, {nullptr, nullptr},
     };
     lua_newtable(state);
     for (const luaL_Reg* function = functions; function->name != nullptr; ++function) {
@@ -169,6 +212,26 @@ void register_world(lua_State* state, World& world) {
         lua_setfield(state, -2, function->name);
     }
     lua_setglobal(state, "world");
+}
+
+void dispatch_intent(lua_State* state, World& world, std::uint16_t player_id,
+                     lolview::net::IntentKind kind, std::uint8_t slot, std::uint16_t target,
+                     float x, float z) {
+    if (world.on_intent_ref == LUA_NOREF) return;
+    const char* kind_name = kind == lolview::net::IntentKind::Attack
+                                ? "attack"
+                                : (kind == lolview::net::IntentKind::Cast ? "cast" : "move");
+    lua_rawgeti(state, LUA_REGISTRYINDEX, world.on_intent_ref);
+    lua_pushinteger(state, player_id);
+    lua_pushstring(state, kind_name);
+    lua_pushinteger(state, slot);
+    lua_pushinteger(state, target);
+    lua_pushnumber(state, x);
+    lua_pushnumber(state, z);
+    if (lua_pcall(state, 6, 0, 0) != LUA_OK) {
+        std::fprintf(stderr, "[lua] on_intent error: %s\n", lua_tostring(state, -1));
+        lua_pop(state, 1);
+    }
 }
 
 void run_tick(lua_State* state, World& world, float dt) {
@@ -243,6 +306,8 @@ int main(int argc, char** argv) {
     float since_snapshot = 0.0f;
     float since_report = 0.0f;
 
+    const auto tick_start = std::chrono::steady_clock::now();
+    long long ticks_done = 0;
     while (duration <= 0.0f || world.elapsed < duration) {
         // ---- inbound: join requests and intents ----
         while (const auto datagram = socket.recv()) {
@@ -283,12 +348,10 @@ int main(int argc, char** argv) {
                             unit->z = intent->z;
                             std::printf("server: player %u move -> (%.0f, %.0f)\n",
                                         intent->player_id, intent->x, intent->z);
-                        } else if (intent->kind == lolview::net::IntentKind::Attack) {
-                            std::printf("server: player %u attack intent (target %u)\n",
-                                        intent->player_id, intent->target);
                         } else {
-                            std::printf("server: player %u cast slot %u\n",
-                                        intent->player_id, intent->slot);
+                            // Attacks and casts are resolved by the game mode.
+                            dispatch_intent(state, world, intent->player_id, intent->kind,
+                                            intent->slot, intent->target, intent->x, intent->z);
                         }
                     }
                     break;
@@ -309,6 +372,7 @@ int main(int argc, char** argv) {
             snapshot.tick = static_cast<std::uint32_t>(world.tick);
             snapshot.units.reserve(world.units.size());
             for (const auto& unit : world.units) {
+                if (unit.dead) continue;
                 lolview::net::UnitState state_on_wire;
                 state_on_wire.id = unit.id;
                 state_on_wire.model = model_index(unit.model);
@@ -330,6 +394,13 @@ int main(int argc, char** argv) {
             since_report = 0.0f;
             print_world(world);
         }
+
+        // Pace the simulation to real time (30 Hz) instead of spinning.
+        ++ticks_done;
+        const auto deadline =
+            tick_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                             std::chrono::duration<double>(ticks_done * kTickSeconds));
+        std::this_thread::sleep_until(deadline);
     }
 
     print_world(world);

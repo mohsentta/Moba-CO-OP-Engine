@@ -187,6 +187,7 @@ struct Args {
     bool mirror_x = false;
     std::string scenario_path = "scenario.txt";
     std::string join;
+    float auto_attack = 0.0f;
     std::string force_anim;
     float pick_x = -1.0f;
     float pick_y = -1.0f;
@@ -674,6 +675,10 @@ int main(int argc, char** argv) {
             if (!next(args.force_anim)) return 2;
         } else if (arg == "--join") {
             if (!next(args.join)) return 2;
+        } else if (arg == "--auto-attack") {
+            std::string value;
+            if (!next(value)) return 2;
+            args.auto_attack = static_cast<float>(std::atof(value.c_str()));
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
         } else if (arg == "--pick-test") {
@@ -1593,6 +1598,8 @@ int main(int argc, char** argv) {
             int team = 0;
         };
         std::vector<RemoteUnit> remote_units;
+        std::uint16_t net_target = 0xffff;
+        float last_auto_attack = -100.0f;
         std::string server_host;
         std::uint16_t server_port = 27015;
 
@@ -1851,9 +1858,17 @@ int main(int argc, char** argv) {
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
                         case SDL_SCANCODE_A:
-                            // Basic attack: cycles the weapon's attack clips.
+                            // Basic attack: local animation plus a server intent.
                             ++attack_variant;
                             attack_lock = 0.05f;
+                            if (connected && net_target != 0xffff) {
+                                lolview::net::Intent intent;
+                                intent.player_id = local_player;
+                                intent.kind = lolview::net::IntentKind::Attack;
+                                intent.target = net_target;
+                                net_socket.send_to(server_host, server_port,
+                                                   lolview::net::encode(intent));
+                            }
                             break;
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
@@ -2197,6 +2212,29 @@ int main(int argc, char** argv) {
                             remote_units.push_back(unit);
                         }
                     }
+                }
+                // Nearest enemy to the champion becomes the attack target.
+                net_target = 0xffff;
+                float best_distance = 1400.0f;
+                for (const auto& remote : remote_units) {
+                    if (remote.team == 0 || remote.hp <= 0.0f) continue;
+                    const lolview::Vec3 remote_position{remote.x, remote.y, remote.z};
+                    const float distance = lolview::length(remote_position - champion_position);
+                    if (distance < best_distance) {
+                        best_distance = distance;
+                        net_target = remote.id;
+                    }
+                }
+                // Headless verification: attack the nearest enemy on a timer.
+                if (args.auto_attack > 0.0f && net_target != 0xffff &&
+                    elapsed - last_auto_attack >= args.auto_attack) {
+                    last_auto_attack = elapsed;
+                    lolview::net::Intent intent;
+                    intent.player_id = local_player;
+                    intent.kind = lolview::net::IntentKind::Attack;
+                    intent.target = net_target;
+                    net_socket.send_to(server_host, server_port,
+                                       lolview::net::encode(intent));
                 }
             }
 
