@@ -2549,14 +2549,15 @@ int main(int argc, char** argv) {
                             unit.max_hp = state.max_hp;
                             unit.team = state.team;
                             unit.anim = static_cast<int>(state.anim);
+                            // Smoothing works in world space, like the draw code.
                             auto& smooth = remote_smooth[state.id];
-                            smooth.target_x = state.x;
-                            smooth.target_z = state.z;
+                            smooth.target_x = spawn.x + state.x;
+                            smooth.target_z = spawn.z + state.z;
                             smooth.target_yaw = state.yaw;
                             if (!smooth.initialised) {
                                 smooth.initialised = true;
-                                smooth.x = state.x;
-                                smooth.z = state.z;
+                                smooth.x = smooth.target_x;
+                                smooth.z = smooth.target_z;
                                 smooth.yaw = state.yaw;
                             }
                             static std::map<std::uint16_t, int> seen_anim;
@@ -2800,6 +2801,7 @@ int main(int argc, char** argv) {
                     draw_z = smooth_it->second.z;
                     draw_yaw = smooth_it->second.yaw;
                 }
+
                 renderer.draw_scene(*remote_mesh, remote_texture, remote_bones, nullptr,
                                     model_matrix(lolview::Vec3{draw_x, remote.y, draw_z},
                                                  draw_yaw),
