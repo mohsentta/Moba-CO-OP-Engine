@@ -141,6 +141,17 @@ struct FreeCamera {
     }
 };
 
+struct Unit {
+    std::string model;
+    const lolview::Skn* mesh = nullptr;  // not owned
+    lolview::Vec3 position{};
+    float yaw = 0.0f;
+    float hp = 100.0f;
+    float max_hp = 100.0f;
+    int team = 0;
+    bool alive = true;
+};
+
 struct ActiveEffect {    lolview::EffectKind kind = lolview::EffectKind::None;
     float age = 0.0f;
     lolview::Vec3 origin{};
@@ -167,6 +178,7 @@ struct Args {
     bool right_handed_view = true;
     // Legacy data-level mirror, kept for comparison only.
     bool mirror_x = false;
+    std::string scenario_path = "scenario.txt";
     int select_piece = -1;
     std::string scene_path;
     std::string capture;
@@ -534,6 +546,8 @@ int main(int argc, char** argv) {
             args.mirror_x = false;
         } else if (arg == "--lh-view") {
             args.right_handed_view = false;
+        } else if (arg == "--scenario") {
+            if (!next(args.scenario_path)) return 2;
         } else if (arg == "--select") {
             std::string value;
             if (!next(value)) return 2;
@@ -1311,6 +1325,43 @@ int main(int argc, char** argv) {
         const lolview::TexImage ground_texture = make_ground_texture();
         const unsigned ground_texture_id = renderer.upload_texture(ground_texture);
 
+        // ---- scenario: entities spawned from a plain-text script ----
+        std::vector<Unit> units;
+        {
+            std::ifstream file(args.scenario_path);
+            std::string line;
+            while (std::getline(file, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                std::istringstream stream(line);
+                std::string kind;
+                std::string model;
+                float hp = 100.0f;
+                float dx = 0.0f, dz = 0.0f;
+                int team = 0;
+                if (!(stream >> kind >> model >> hp >> dx >> dz)) continue;
+                if (kind != "unit") continue;
+                if (!(stream >> team)) team = 0;
+
+                Unit unit;
+                unit.model = model;
+                unit.hp = unit.max_hp = hp;
+                unit.team = team;
+                if (model == args.champion) {
+                    unit.mesh = &mesh;
+                } else if (model == "pet" && has_pet) {
+                    unit.mesh = &pet_mesh;
+                } else {
+                    unit.mesh = &dummy_mesh;
+                }
+                unit.position = spawn + lolview::Vec3{dx, 0.0f, dz};
+                units.push_back(unit);
+            }
+        }
+        if (!units.empty()) {
+            std::printf("  scenario: %zu units from %s\n", units.size(),
+                        args.scenario_path.c_str());
+        }
+
         std::vector<ActiveEffect> effects;
         float cooldowns[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         const float cooldown_max[4] = {7.0f, 9.0f, 14.0f, 120.0f};
@@ -1612,6 +1663,25 @@ int main(int argc, char** argv) {
                     effect.hit_applied = true;
                     dummy_hp = std::max(0.0f, dummy_hp - 90.0f);
                     dummy_flash = 0.25f;
+
+                    // Damage the nearest enemy unit to the impact point.
+                    const lolview::Vec3 impact =
+                        dummy_position + lolview::Vec3{0.0f, 60.0f, 0.0f};
+                    Unit* best = nullptr;
+                    float best_distance = 260.0f;
+                    for (auto& unit : units) {
+                        if (!unit.alive || unit.team == 0) continue;
+                        const float distance =
+                            lolview::length(unit.position - impact);
+                        if (distance < best_distance) {
+                            best_distance = distance;
+                            best = &unit;
+                        }
+                    }
+                    if (best != nullptr) {
+                        best->hp = std::max(0.0f, best->hp - 90.0f);
+                        if (best->hp <= 0.0f) best->alive = false;
+                    }
                 }
             }
             effects.erase(std::remove_if(effects.begin(), effects.end(),
@@ -1668,6 +1738,18 @@ int main(int argc, char** argv) {
             if (has_pet) {
                 renderer.draw_scene(pet_mesh, has_pet_texture ? &pet_texture : nullptr, nullptr,
                                     nullptr, lolview::translation(pet_position), view, proj, w, h);
+            }
+            for (const auto& unit : units) {
+                if (!unit.alive || unit.mesh == nullptr) continue;
+                if (unit.mesh == &pet_mesh && !has_pet) continue;
+                const lolview::TexImage* unit_texture = nullptr;
+                if (unit.mesh == &mesh && has_texture) {
+                    unit_texture = &texture;
+                } else if (unit.mesh == &pet_mesh && has_pet_texture) {
+                    unit_texture = &pet_texture;
+                }
+                renderer.draw_scene(*unit.mesh, unit_texture, nullptr, nullptr,
+                                    model_matrix(unit.position, unit.yaw), view, proj, w, h);
             }
             renderer.draw_scene(dummy_mesh, nullptr, nullptr, nullptr,
                                 lolview::translation(dummy_position + lolview::Vec3{0, 40, 0}),
@@ -1772,6 +1854,22 @@ int main(int argc, char** argv) {
                 const ImU32 fill = dummy_flash > 0.0f ? IM_COL32(240, 240, 240, 255)
                                                       : IM_COL32(196, 66, 72, 255);
                 draw_bar(draw, top_left, ImVec2(110.0f, 10.0f), dummy_hp / dummy_max_hp, fill,
+                         IM_COL32(12, 12, 14, 210), nullptr);
+            }
+
+            // health bars for scenario units
+            for (const auto& unit : units) {
+                if (!unit.alive || unit.max_hp <= 0.0f) continue;
+                float unit_x = 0.0f, unit_y = 0.0f;
+                if (!project_to_screen(view, proj,
+                                       unit.position + lolview::Vec3{0.0f, 150.0f, 0.0f}, w, h,
+                                       unit_x, unit_y)) {
+                    continue;
+                }
+                const ImVec2 top_left(unit_x - 45.0f, unit_y - 5.0f);
+                const ImU32 fill = unit.team == 0 ? IM_COL32(96, 200, 120, 255)
+                                                  : IM_COL32(200, 78, 84, 255);
+                draw_bar(draw, top_left, ImVec2(90.0f, 9.0f), unit.hp / unit.max_hp, fill,
                          IM_COL32(12, 12, 14, 210), nullptr);
             }
 
