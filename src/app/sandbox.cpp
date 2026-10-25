@@ -583,6 +583,7 @@ int main(int argc, char** argv) {
         std::vector<TerrainGroup> terrain_groups;
         std::vector<MapPiece> map_pieces;
         std::map<std::string, lolview::TexImage> terrain_textures;
+        std::map<std::string, std::string> terrain_texture_paths;
         lolview::Vec3 spawn{0.0f, 0.0f, 0.0f};
 
         if (args.load_map) {
@@ -808,6 +809,7 @@ int main(int argc, char** argv) {
                                 group.has_texture = true;
                                 group.texture_path = path;
                                 terrain_textures[group.material] = std::move(decoded);
+                                terrain_texture_paths[group.material] = path;
                                 ++textured;
                             } catch (const std::exception&) {
                             }
@@ -889,9 +891,15 @@ int main(int argc, char** argv) {
                         std::transform(material_lower.begin(), material_lower.end(),
                                        material_lower.begin(),
                                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        // Cutout is decided by the texture that was resolved: the
+                        // material name carries no alpha hint, but the texture
+                        // file does (`..._1bitalpha.tex`).
+                        const auto path_it = terrain_texture_paths.find(piece.material);
+                        const std::string& texture_path =
+                            path_it == terrain_texture_paths.end() ? std::string() : path_it->second;
                         const bool cutout =
-                            terrain_textures.count(piece.material) > 0 &&
-                            (piece.material.find("1bitalpha") != std::string::npos ||
+                            path_it != terrain_texture_paths.end() &&
+                            (texture_path.find("1bitalpha") != std::string::npos ||
                              material_lower.find("decal") != std::string::npos ||
                              material_lower.find("leaf") != std::string::npos ||
                              material_lower.find("foliage") != std::string::npos ||
