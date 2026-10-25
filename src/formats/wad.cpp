@@ -94,8 +94,19 @@ Wad Wad::open(const std::filesystem::path& path) {
     wad.path_ = path;
     wad.bytes_.resize(static_cast<std::size_t>(size));
     in.seekg(0);
-    if (!in.read(reinterpret_cast<char*>(wad.bytes_.data()), size)) {
-        throw std::runtime_error("cannot read archive: " + path.string());
+    // Read in chunks: a single 2.4 GB read (Map11.wad) fails on this toolchain.
+    {
+        constexpr std::size_t kChunk = 64u * 1024u * 1024u;
+        std::size_t done = 0;
+        while (done < wad.bytes_.size()) {
+            const std::size_t want = std::min(kChunk, wad.bytes_.size() - done);
+            in.read(reinterpret_cast<char*>(wad.bytes_.data() + done),
+                    static_cast<std::streamsize>(want));
+            if (in.gcount() != static_cast<std::streamsize>(want)) {
+                throw std::runtime_error("cannot read archive: " + path.string());
+            }
+            done += want;
+        }
     }
 
     const std::uint8_t* bytes = wad.bytes_.data();

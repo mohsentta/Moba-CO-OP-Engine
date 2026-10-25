@@ -78,6 +78,9 @@ struct Args {
     std::string archive = "Ahri.wad";
     std::string champion = "Ahri";
     std::string vfx_bin;
+    std::string pet;
+    std::string pet_archive = "Map11";
+    bool load_map = false;
     std::string capture;
     std::string auto_cast;
     float capture_after = -1.0f;
@@ -91,6 +94,22 @@ struct Args {
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+// Archives are large (Map11 is 2.4 GB), so each one is opened at most once and
+// shared by every lookup for the lifetime of the process.
+std::map<std::string, std::shared_ptr<lolview::Wad>>& archive_cache() {
+    static std::map<std::string, std::shared_ptr<lolview::Wad>> cache;
+    return cache;
+}
+
+std::shared_ptr<lolview::Wad> open_archive(const std::string& path) {
+    auto& cache = archive_cache();
+    const auto existing = cache.find(path);
+    if (existing != cache.end()) return existing->second;
+    auto wad = std::make_shared<lolview::Wad>(lolview::Wad::open(path));
+    cache[path] = wad;
+    return wad;
+}
+
 std::optional<std::vector<std::uint8_t>> resolve_chunk(const std::string& game_dir,
                                                        const std::string& archive_filter,
                                                        const std::string& virtual_path) {
@@ -98,10 +117,10 @@ std::optional<std::vector<std::uint8_t>> resolve_chunk(const std::string& game_d
     const std::uint64_t key = lolview::path_hash(virtual_path);
     for (const auto& archive_path : source.archives()) {
         if (archive_path.string().find(archive_filter) == std::string::npos) continue;
-        const auto wad = lolview::Wad::open(archive_path);
-        const auto index = wad.find(key);
+        const auto wad = open_archive(archive_path.string());
+        const auto index = wad->find(key);
         if (!index) continue;
-        return wad.read_chunk(wad.entries()[*index]);
+        return wad->read_chunk(wad->entries()[*index]);
     }
     return std::nullopt;
 }
@@ -112,10 +131,10 @@ std::optional<std::vector<std::uint8_t>> resolve_chunk_hash(const std::string& g
     lolview::AssetSource source(game_dir);
     for (const auto& archive_path : source.archives()) {
         if (archive_path.string().find(archive_filter) == std::string::npos) continue;
-        const auto wad = lolview::Wad::open(archive_path);
-        const auto index = wad.find(hash);
+        const auto wad = open_archive(archive_path.string());
+        const auto index = wad->find(hash);
         if (!index) continue;
-        return wad.read_chunk(wad.entries()[*index]);
+        return wad->read_chunk(wad->entries()[*index]);
     }
     return std::nullopt;
 }
@@ -287,6 +306,12 @@ int main(int argc, char** argv) {
             if (!next(args.champion)) return 2;
         } else if (arg == "--vfx-bin") {
             if (!next(args.vfx_bin)) return 2;
+        } else if (arg == "--pet") {
+            if (!next(args.pet)) return 2;
+        } else if (arg == "--pet-archive") {
+            if (!next(args.pet_archive)) return 2;
+        } else if (arg == "--map") {
+            args.load_map = true;
         } else if (arg == "--capture") {
             if (!next(args.capture)) return 2;
         } else if (arg == "--auto-cast") {
@@ -414,6 +439,69 @@ int main(int argc, char** argv) {
                 }
                 std::printf("  vfx     : %zu systems, %zu mapped\n", vfx_systems.size(),
                             vfx_by_kind.size());
+            }
+        }
+
+        // ---- optional jungle pet and Summoner's Rift ground ----
+        lolview::Skn pet_mesh;
+        lolview::TexImage pet_texture;
+        bool has_pet = false;
+        bool has_pet_texture = false;
+        const lolview::Vec3 pet_position{170.0f, 0.0f, -70.0f};
+
+        if (!args.pet.empty()) {
+            const std::string base =
+                "ASSETS/Characters/" + args.pet + "/Skins/Base/" + args.pet;
+            const auto mesh_bytes =
+                resolve_chunk(args.game_dir, args.pet_archive, base + ".skn");
+            const auto texture_bytes =
+                resolve_chunk(args.game_dir, args.pet_archive, base + ".tex");
+            if (!mesh_bytes) {
+                std::fprintf(stderr, "warning: pet '%s' not found in %s\n", args.pet.c_str(),
+                             args.pet_archive.c_str());
+            } else {
+                try {
+                    pet_mesh = lolview::Skn::parse(*mesh_bytes);
+                    has_pet = true;
+                    if (texture_bytes) {
+                        pet_texture = lolview::decode_tex(*texture_bytes);
+                        has_pet_texture = true;
+                    }
+                    std::printf("  pet     : %s, %zu verts\n", args.pet.c_str(),
+                                pet_mesh.vertices().size());
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "warning: pet parse failed: %s\n", error.what());
+                }
+            }
+        }
+
+        // The Rift minimap is a clean top-down painting; far better ground than
+        // a procedural grid. It lives in the 2.4 GB map archive, so it is opt-in.
+        lolview::TexImage map_texture;
+        bool has_map_texture = false;
+        if (args.load_map) {
+            if (auto bytes = resolve_chunk(args.game_dir, "Map11",
+                                           "assets/maps/info/map11/2dlevelminimap.dds")) {
+                try {
+                    map_texture = lolview::decode_dds(*bytes);
+                    for (int row = 0; row < map_texture.height / 2; ++row) {
+                        auto* top = map_texture.rgba.data() +
+                                    static_cast<std::size_t>(row) * map_texture.width * 4;
+                        auto* bottom = map_texture.rgba.data() +
+                                       static_cast<std::size_t>(map_texture.height - 1 - row) *
+                                           map_texture.width * 4;
+                        for (int i = 0; i < map_texture.width * 4; ++i) {
+                            std::swap(top[i], bottom[i]);
+                        }
+                    }
+                    has_map_texture = true;
+                    std::printf("  map     : minimap %dx%d\n", map_texture.width,
+                                map_texture.height);
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "warning: map texture failed: %s\n", error.what());
+                }
+            } else {
+                std::fprintf(stderr, "warning: map minimap texture not found\n");
             }
         }
 
@@ -704,10 +792,14 @@ int main(int argc, char** argv) {
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 1.0f, 8000.0f);
 
-            renderer.draw_scene(ground, &ground_texture, nullptr, nullptr,
-                                lolview::Mat4::identity(), view, proj, w, h);
+            renderer.draw_scene(ground, has_map_texture ? &map_texture : &ground_texture, nullptr,
+                                nullptr, lolview::Mat4::identity(), view, proj, w, h);
             renderer.draw_scene(mesh, has_texture ? &texture : nullptr, &bones, nullptr,
                                 model_matrix(champion_position, champion_yaw), view, proj, w, h);
+            if (has_pet) {
+                renderer.draw_scene(pet_mesh, has_pet_texture ? &pet_texture : nullptr, nullptr,
+                                    nullptr, lolview::translation(pet_position), view, proj, w, h);
+            }
             renderer.draw_scene(dummy_mesh, nullptr, nullptr, nullptr,
                                 lolview::translation(dummy_position + lolview::Vec3{0, 40, 0}),
                                 view, proj, w, h);
