@@ -12,6 +12,7 @@
 #include <lolview/asset_source.hpp>
 #include <lolview/bin.hpp>
 #include <lolview/mapgeo.hpp>
+#include <lolview/net.hpp>
 #include <lolview/pose.hpp>
 #include <lolview/renderer.hpp>
 #include <lolview/skl.hpp>
@@ -40,6 +41,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -184,6 +186,7 @@ struct Args {
     // Legacy data-level mirror, kept for comparison only.
     bool mirror_x = false;
     std::string scenario_path = "scenario.txt";
+    std::string join;
     std::string force_anim;
     float pick_x = -1.0f;
     float pick_y = -1.0f;
@@ -669,6 +672,8 @@ int main(int argc, char** argv) {
             args.right_handed_view = false;
         } else if (arg == "--anim") {
             if (!next(args.force_anim)) return 2;
+        } else if (arg == "--join") {
+            if (!next(args.join)) return 2;
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
         } else if (arg == "--pick-test") {
@@ -1576,6 +1581,54 @@ int main(int argc, char** argv) {
         }
         unit_models["cube"] = &dummy_mesh;
 
+        // ---- networked client (optional) ----
+        lolview::net::UdpSocket net_socket;
+        bool connected = false;
+        std::uint16_t local_player = 0;
+        std::vector<std::string> net_models;
+        struct RemoteUnit {
+            std::uint16_t id = 0;
+            std::string model;
+            float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, hp = 0.0f, max_hp = 0.0f;
+            int team = 0;
+        };
+        std::vector<RemoteUnit> remote_units;
+        std::string server_host;
+        std::uint16_t server_port = 27015;
+
+        if (!args.join.empty()) {
+            server_host = args.join;
+            const auto colon = server_host.find(':');
+            if (colon != std::string::npos) {
+                server_port = static_cast<std::uint16_t>(
+                    std::atoi(server_host.substr(colon + 1).c_str()));
+                server_host = server_host.substr(0, colon);
+            }
+            if (net_socket.bind(0)) {
+                net_socket.set_non_blocking(true);
+                lolview::net::Hello hello;
+                hello.name = "player";
+                const bool sent =
+                    net_socket.send_to(server_host, server_port, lolview::net::encode(hello));
+                std::printf("  net     : hello %s -> %s:%u (local port %u)\n",
+                            sent ? "sent" : "FAILED", server_host.c_str(), server_port,
+                            net_socket.local_port());
+                for (int attempt = 0; attempt < 3000 && !connected; ++attempt) {
+                    if (const auto datagram = net_socket.recv()) {
+                        if (const auto welcome = lolview::net::decode_welcome(datagram->data)) {
+                            connected = true;
+                            local_player = welcome->player_id;
+                            net_models = welcome->models;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                std::printf("  net     : %s (%s:%u, player %u)\n",
+                            connected ? "joined" : "no server", server_host.c_str(),
+                            server_port, local_player);
+            }
+        }
+
         const auto load_extra_model = [&](const std::string& name) -> const lolview::Skn* {
             std::string archive_filter;
             std::string mesh_path;
@@ -1731,6 +1784,15 @@ int main(int argc, char** argv) {
                         pick_ground(camera, mx, my, w, h, ground_point)) {
                         move_target = ground_point;
                         has_move_target = true;
+                        if (connected) {
+                            lolview::net::Intent intent;
+                            intent.player_id = local_player;
+                            intent.kind = lolview::net::IntentKind::Move;
+                            intent.x = ground_point.x;
+                            intent.z = ground_point.z;
+                            net_socket.send_to(server_host, server_port,
+                                               lolview::net::encode(intent));
+                        }
                     }
                 }
 
@@ -2109,6 +2171,35 @@ int main(int argc, char** argv) {
                                          [](const ActiveEffect& e) { return e.age > 3.0f; }),
                           effects.end());
 
+            // ---- network: pull the latest authoritative snapshot ----
+            if (connected) {
+                while (const auto datagram = net_socket.recv()) {
+                    if (const auto snapshot = lolview::net::decode_snapshot(datagram->data)) {
+                        remote_units.clear();
+                        for (const auto& state : snapshot->units) {
+                            RemoteUnit unit;
+                            unit.id = state.id;
+                            unit.model = state.model < net_models.size()
+                                             ? net_models[state.model]
+                                             : std::string("cube");
+                            // Server coordinates are world-relative; the client
+                            // places them around its own spawn, like the scenario.
+                            unit.x = spawn.x + state.x;
+                            unit.y = spawn.y + state.y;
+                            unit.z = spawn.z + state.z;
+                            unit.yaw = state.yaw;
+                            unit.hp = state.hp;
+                            unit.max_hp = state.max_hp;
+                            unit.team = state.team;
+                            if (unit_models.find(unit.model) == unit_models.end()) {
+                                load_extra_model(unit.model);
+                            }
+                            remote_units.push_back(unit);
+                        }
+                    }
+                }
+            }
+
             // ---- draw ----
             int w = 0, h = 0;
             SDL_GetWindowSizeInPixels(renderer.window(), &w, &h);
@@ -2181,6 +2272,19 @@ int main(int argc, char** argv) {
             renderer.draw_scene(dummy_mesh, nullptr, nullptr, nullptr,
                                 lolview::translation(dummy_position + lolview::Vec3{0, 40, 0}),
                                 view, proj, w, h);
+            for (const auto& remote : remote_units) {
+                const auto mesh_it = unit_models.find(remote.model);
+                const lolview::Skn* remote_mesh =
+                    mesh_it != unit_models.end() ? mesh_it->second : &dummy_mesh;
+                const auto texture_it = unit_textures.find(remote.model);
+                const lolview::TexImage* remote_texture =
+                    texture_it != unit_textures.end() ? texture_it->second : nullptr;
+                renderer.draw_scene(
+                    *remote_mesh, remote_texture, nullptr, nullptr,
+                    model_matrix(lolview::Vec3{remote.x, remote.y, remote.z}, remote.yaw), view,
+                    proj, w, h);
+            }
+
             for (const auto& [sprite, batch] : batches) {
                 if (!batch.empty()) renderer.draw_particles(batch, sprite, view, proj);
             }
@@ -2298,6 +2402,21 @@ int main(int argc, char** argv) {
                                                   : IM_COL32(200, 78, 84, 255);
                 draw_bar(draw, top_left, ImVec2(90.0f, 9.0f), unit.hp / unit.max_hp, fill,
                          IM_COL32(12, 12, 14, 210), nullptr);
+            }
+
+            // health bars for networked units
+            for (const auto& remote : remote_units) {
+                if (remote.max_hp <= 0.0f) continue;
+                float remote_x = 0.0f, remote_y = 0.0f;
+                if (!project_to_screen(view, proj,
+                                       lolview::Vec3{remote.x, remote.y + 150.0f, remote.z}, w,
+                                       h, remote_x, remote_y)) {
+                    continue;
+                }
+                const ImU32 fill = remote.team == 0 ? IM_COL32(96, 200, 120, 255)
+                                                    : IM_COL32(200, 78, 84, 255);
+                draw_bar(draw, ImVec2(remote_x - 45.0f, remote_y - 5.0f), ImVec2(90.0f, 9.0f),
+                         remote.hp / remote.max_hp, fill, IM_COL32(12, 12, 14, 210), nullptr);
             }
 
             // champion selection ring / shadow on the ground
