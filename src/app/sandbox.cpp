@@ -190,6 +190,7 @@ struct Args {
     float auto_attack = 0.0f;
     float auto_spell = 0.0f;
     bool path_test = false;
+    bool path_editor = false;
     std::string auto_move;
     std::string force_anim;
     float pick_x = -1.0f;
@@ -689,6 +690,8 @@ int main(int argc, char** argv) {
             args.auto_spell = static_cast<float>(std::atof(value.c_str()));
         } else if (arg == "--path-test") {
             args.path_test = true;
+        } else if (arg == "--path-editor") {
+            args.path_editor = true;
         } else if (arg == "--auto-move") {
             if (!next(args.auto_move)) return 2;
         } else if (arg == "--scenario") {
@@ -1626,6 +1629,18 @@ int main(int argc, char** argv) {
         int auto_spell_slot = 0;
         std::string server_host;
         std::uint16_t server_port = 27015;
+
+        if (args.path_editor) {
+            // Start with the walkable-path editor open (edit.bat uses this).
+            path_edit = true;
+            editor_mode = true;
+            free_mode = true;
+            free_camera.position = camera.eye();
+            const lolview::Vec3 direction = lolview::normalize(camera.focus - camera.eye());
+            free_camera.yaw = std::atan2(direction.x, direction.z);
+            free_camera.pitch = std::asin(direction.y);
+            std::printf("  path    : editor open (click to add vertices)\n");
+        }
 
         if (args.path_test) {
             // Seed a triangle so the overlay can be inspected without clicking.
