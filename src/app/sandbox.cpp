@@ -188,6 +188,7 @@ struct Args {
     std::string scenario_path = "scenario.txt";
     std::string join;
     float auto_attack = 0.0f;
+    float auto_spell = 0.0f;
     std::string force_anim;
     float pick_x = -1.0f;
     float pick_y = -1.0f;
@@ -679,6 +680,10 @@ int main(int argc, char** argv) {
             std::string value;
             if (!next(value)) return 2;
             args.auto_attack = static_cast<float>(std::atof(value.c_str()));
+        } else if (arg == "--auto-spell") {
+            std::string value;
+            if (!next(value)) return 2;
+            args.auto_spell = static_cast<float>(std::atof(value.c_str()));
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
         } else if (arg == "--pick-test") {
@@ -1600,6 +1605,8 @@ int main(int argc, char** argv) {
         std::vector<RemoteUnit> remote_units;
         std::uint16_t net_target = 0xffff;
         float last_auto_attack = -100.0f;
+        float last_auto_spell = -100.0f;
+        int auto_spell_slot = 0;
         std::string server_host;
         std::uint16_t server_port = 27015;
 
@@ -1733,6 +1740,17 @@ int main(int argc, char** argv) {
                                     const lolview::Vec3& aim) {
             if (cooldowns[slot] > 0.0f) return;
             cooldowns[slot] = cooldown_max[slot];
+            if (connected) {
+                lolview::net::Intent intent;
+                intent.player_id = local_player;
+                intent.kind = lolview::net::IntentKind::Cast;
+                intent.slot = static_cast<std::uint8_t>(slot);
+                // Server space is world-relative; the client offsets by its spawn.
+                intent.x = aim.x - spawn.x;
+                intent.z = aim.z - spawn.z;
+                net_socket.send_to(server_host, server_port,
+                                   lolview::net::encode(intent));
+            }
 
             lolview::Vec3 direction = aim - champion_position;
             direction.y = 0.0f;
@@ -2233,6 +2251,20 @@ int main(int argc, char** argv) {
                     intent.player_id = local_player;
                     intent.kind = lolview::net::IntentKind::Attack;
                     intent.target = net_target;
+                    net_socket.send_to(server_host, server_port,
+                                       lolview::net::encode(intent));
+                }
+
+                // Headless verification: cycle spell slots at the wave.
+                if (args.auto_spell > 0.0f && elapsed - last_auto_spell >= args.auto_spell) {
+                    last_auto_spell = elapsed;
+                    lolview::net::Intent intent;
+                    intent.player_id = local_player;
+                    intent.kind = lolview::net::IntentKind::Cast;
+                    intent.slot = static_cast<std::uint8_t>(auto_spell_slot++ % 4);
+                    // Aim where the wave ends up (server space).
+                    intent.x = 0.0f;
+                    intent.z = 0.0f;
                     net_socket.send_to(server_host, server_port,
                                        lolview::net::encode(intent));
                 }

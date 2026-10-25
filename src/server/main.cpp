@@ -178,6 +178,30 @@ int world_on_intent(lua_State* state) {
     return 0;
 }
 
+int world_units(lua_State* state) {
+    World& world = world_from(state);
+    lua_newtable(state);
+    int index = 1;
+    for (const auto& unit : world.units) {
+        if (unit.dead) continue;
+        lua_newtable(state);
+        lua_pushinteger(state, unit.id);
+        lua_setfield(state, -2, "id");
+        lua_pushnumber(state, unit.x);
+        lua_setfield(state, -2, "x");
+        lua_pushnumber(state, unit.z);
+        lua_setfield(state, -2, "z");
+        lua_pushnumber(state, unit.hp);
+        lua_setfield(state, -2, "hp");
+        lua_pushnumber(state, unit.max_hp);
+        lua_setfield(state, -2, "max_hp");
+        lua_pushinteger(state, unit.team);
+        lua_setfield(state, -2, "team");
+        lua_rawseti(state, -2, index++);
+    }
+    return 1;
+}
+
 int world_count(lua_State* state) {
     World& world = world_from(state);
     lua_pushinteger(state, static_cast<lua_Integer>(world.units.size()));
@@ -201,7 +225,7 @@ int world_on_tick(lua_State* state) {
 void register_world(lua_State* state, World& world) {
     static const luaL_Reg functions[] = {
         {"spawn", world_spawn}, {"set_hp", world_set_hp},       {"move", world_move},
-        {"unit", world_unit},   {"count", world_count},         {"log", world_log},
+        {"unit", world_unit},   {"count", world_count}, {"units", world_units},         {"log", world_log},
         {"on_tick", world_on_tick}, {"damage", world_damage},   {"remove", world_remove},
         {"time", world_time},       {"on_intent", world_on_intent}, {nullptr, nullptr},
     };
@@ -281,6 +305,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     World world;
     lua_State* state = luaL_newstate();
     luaL_openlibs(state);
