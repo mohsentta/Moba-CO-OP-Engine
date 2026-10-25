@@ -311,6 +311,27 @@ std::string skin_path(const std::string& champion, const char* suffix) {
     return "ASSETS/Characters/" + champion + "/Skins/Base/" + champion + "_Base" + suffix;
 }
 
+// HUD ability icons. Champions disagree on naming: Icons_Ahri_Q.dds vs
+// jinx_q1.dds (Jinx even has one Q icon per weapon).
+std::vector<std::string> hud_icon_candidates(const std::string& champion, const char* ability,
+                                             int variant) {
+    std::string lower_champion = champion;
+    std::string lower_ability = ability;
+    std::transform(lower_champion.begin(), lower_champion.end(), lower_champion.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(lower_ability.begin(), lower_ability.end(), lower_ability.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    const std::string base = "ASSETS/Characters/" + champion + "/HUD/Icons2D/";
+    std::vector<std::string> candidates;
+    candidates.push_back(base + "Icons_" + champion + "_" + ability + ".dds");
+    std::string lower_variant = lower_ability + std::to_string(variant);
+    candidates.push_back(base + lower_champion + "_" + lower_variant + ".dds");
+    candidates.push_back(base + lower_champion + "_" + lower_ability + ".dds");
+    candidates.push_back(base + lower_champion + "_" + lower_variant + "_1.dds");
+    return candidates;
+}
+
 std::string icon_path(const std::string& champion, const char* ability) {    return "ASSETS/Characters/" + champion + "/HUD/Icons2D/Icons_" + champion + "_" +
            ability + ".dds";
 }
@@ -1288,15 +1309,25 @@ int main(int argc, char** argv) {
 
         // ---- HUD icons (real game art) ----
         unsigned icon_textures[4] = {0, 0, 0, 0};
+        unsigned icon_textures_alt[4] = {0, 0, 0, 0};  // per-weapon Q art
         for (int i = 0; i < 4; ++i) {
             const char* keys[4] = {"Q", "W", "E", "R"};
-            const auto bytes =
-                resolve_chunk(args.game_dir, args.archive, icon_path(args.champion, keys[i]));
-            if (!bytes) continue;
-            try {
-                icon_textures[i] = renderer.upload_texture(lolview::decode_dds(*bytes));
-            } catch (const std::exception&) {
-                icon_textures[i] = 0;
+            for (int variant = 1; variant <= 2; ++variant) {
+                for (const auto& path : hud_icon_candidates(args.champion, keys[i], variant)) {
+                    const auto bytes = resolve_chunk(args.game_dir, args.archive, path);
+                    if (!bytes) continue;
+                    try {
+                        const unsigned texture =
+                            renderer.upload_texture(lolview::decode_dds(*bytes));
+                        if (variant == 1) {
+                            icon_textures[i] = texture;
+                        } else {
+                            icon_textures_alt[i] = texture;
+                        }
+                    } catch (const std::exception&) {
+                    }
+                    break;
+                }
             }
         }
 
@@ -2132,9 +2163,13 @@ int main(int argc, char** argv) {
                 const ImVec2 top_left(start_x + i * (icon + gap), start_y);
                 const ImVec2 bottom_right(top_left.x + icon, top_left.y + icon);
 
-                if (icon_textures[i] != 0) {
-                    draw->AddImage(static_cast<ImTextureID>(icon_textures[i]), top_left,
-                                   bottom_right);
+                // Q shows a different icon per weapon when the champion has one
+                // (Jinx: jinx_q1 minigun / jinx_q2 rocket launcher).
+                const unsigned icon = (i == 0 && rocket_mode && icon_textures_alt[0] != 0)
+                                          ? icon_textures_alt[0]
+                                          : icon_textures[i];
+                if (icon != 0) {
+                    draw->AddImage(static_cast<ImTextureID>(icon), top_left, bottom_right);
                 } else {
                     draw->AddRectFilled(top_left, bottom_right, IM_COL32(40, 48, 66, 255), 4.0f);
                 }
