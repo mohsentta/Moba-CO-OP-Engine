@@ -1162,8 +1162,12 @@ int main(int argc, char** argv) {
         LeagueCamera camera;
         FreeCamera free_camera;
         bool free_mode = false;
+        bool editor_mode = false;  // F2: free-fly camera + editor window
 
-        if (args.start_free_camera) free_mode = true;
+        if (args.start_free_camera) {
+            free_mode = true;
+            editor_mode = true;
+        }
         if (args.select_piece >= 0 &&
             args.select_piece < static_cast<int>(map_pieces.size())) {
             selected_piece = args.select_piece;
@@ -1312,7 +1316,10 @@ int main(int argc, char** argv) {
                             if (!free_mode) has_move_target = false;
                             break;
                         case SDL_SCANCODE_F2: {
-                            free_mode = !free_mode;
+                            // F2 opens the editor: free-fly camera plus the
+                            // editor window. Pressing it again returns to play.
+                            editor_mode = !editor_mode;
+                            free_mode = editor_mode;
                             if (free_mode) {
                                 free_camera.position = camera.eye();
                                 const lolview::Vec3 direction =
@@ -1704,16 +1711,16 @@ int main(int argc, char** argv) {
             char status[160];
             std::snprintf(status, sizeof(status),
                           "%.0f fps   |   RMB move   S stop   QWER cast   Y %s camera   "
-                          "F2 %s (WASD)",
+                          "F2 %s",
                           fps, camera.locked ? "locked" : "free",
-                          free_mode ? "free-fly ON" : "free-fly off");
+                          editor_mode ? "editor ON (WASD fly)" : "editor");
             draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
             draw->AddText(ImVec2(14.0f, static_cast<float>(h) - 22.0f),
                           IM_COL32(120, 130, 145, 190),
                           "not affiliated with Riot Games - assets read from your own install");
 
-            // ---- map editor ----
-            if (!map_pieces.empty()) {
+            // ---- map editor (F2) ----
+            if (editor_mode && !map_pieces.empty()) {
                 ImGui::SetNextWindowPos(ImVec2(static_cast<float>(w) - 400.0f, 56.0f),
                                         ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(ImVec2(380.0f, 540.0f), ImGuiCond_FirstUseEver);

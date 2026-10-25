@@ -87,6 +87,7 @@ casts, and a League-style HUD with the champion's own ability icons.
 | mouse wheel | zoom |
 | `Y` | toggle camera lock |
 | `SPACE` | re-centre and lock |
+| `F2` | editor mode: free-fly camera (WASD, Space/Ctrl, Shift boost, right-drag look) plus the editor window |
 | `ESC` | quit |
 
 The HUD draws the real ability icons, cooldown timers, champion health/mana,
