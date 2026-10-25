@@ -134,6 +134,9 @@ struct Args {
     bool load_map = false;
     bool save_scene_on_start = false;
     bool start_free_camera = false;
+    // The shipped map geometry reads mirrored; flip it in the data so the
+    // camera and controls keep their normal handedness.
+    bool mirror_x = true;
     int select_piece = -1;
     std::string scene_path;
     std::string capture;
@@ -490,6 +493,10 @@ int main(int argc, char** argv) {
             args.save_scene_on_start = true;
         } else if (arg == "--free") {
             args.start_free_camera = true;
+        } else if (arg == "--mirror-x") {
+            args.mirror_x = true;
+        } else if (arg == "--no-mirror") {
+            args.mirror_x = false;
         } else if (arg == "--select") {
             std::string value;
             if (!next(value)) return 2;
@@ -825,7 +832,8 @@ int main(int argc, char** argv) {
                                                            std::move(vertices),
                                                            std::move(indices));
                     has_terrain = terrain_mesh.indices().size() > 0;
-                    spawn = lolview::Vec3{focus.x, have_ground ? ground_y : spawn_y, focus.z};
+                    spawn = lolview::Vec3{focus.x * (args.mirror_x ? -1.0f : 1.0f),
+                                          have_ground ? ground_y : spawn_y, focus.z};
                     std::printf("  terrain : %zu verts, %zu tris around (%.0f, %.0f, %.0f)\n",
                                 terrain_mesh.vertices().size(),
                                 terrain_mesh.indices().size() / 3, spawn.x, spawn.y,
@@ -945,22 +953,30 @@ int main(int argc, char** argv) {
                             static_cast<std::uint32_t>(source.indices.size());
 
                         std::vector<lolview::SknVertex> piece_vertices(source.vertices.size());
+                        const float mirror = args.mirror_x ? -1.0f : 1.0f;
                         for (std::size_t v = 0; v < source.vertices.size(); ++v) {
                             const auto& in = source.vertices[v];
                             lolview::SknVertex out{};
-                            out.position = {in.px, in.py, in.pz};
-                            out.normal = {in.nx, in.ny, in.nz};
+                            out.position = {in.px * mirror, in.py, in.pz};
+                            out.normal = {in.nx * mirror, in.ny, in.nz};
                             out.uv = {in.u, in.v};
                             out.weights = {1.0f, 0.0f, 0.0f, 0.0f};
                             piece_vertices[v] = out;
                         }
                         std::vector<std::uint16_t> piece_indices(source.indices.begin(),
                                                                  source.indices.end());
+                        if (args.mirror_x) {
+                            // Mirroring reverses triangle winding; swap to keep
+                            // the outward faces outward.
+                            for (std::size_t i = 0; i + 2 < piece_indices.size(); i += 3) {
+                                std::swap(piece_indices[i + 1], piece_indices[i + 2]);
+                            }
+                        }
                         piece.mesh = lolview::Skn::from_parts(std::move(piece_materials),
                                                              std::move(piece_vertices),
                                                              std::move(piece_indices));
-                        piece.position = {source.transform.m[12], source.transform.m[13],
-                                          source.transform.m[14]};
+                        piece.position = {source.transform.m[12] * (args.mirror_x ? -1.0f : 1.0f),
+                                          source.transform.m[13], source.transform.m[14]};
 
                         const auto bounds = piece.mesh.compute_bounds();
                         piece.center = {(bounds.min[0] + bounds.max[0]) * 0.5f,
