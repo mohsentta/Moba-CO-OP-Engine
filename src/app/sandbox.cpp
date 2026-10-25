@@ -1721,6 +1721,15 @@ int main(int argc, char** argv) {
         // unit id -> champion name, straight from the host roster.
         std::map<std::uint16_t, std::string> player_champions;
         std::map<std::uint16_t, float> remote_phase;  // per-unit animation clock
+        // Remote transforms are smoothed between snapshots; drawing raw 20 Hz
+        // positions makes other players jitter.
+        struct RemoteSmooth {
+            float x = 0.0f, z = 0.0f;
+            float target_x = 0.0f, target_z = 0.0f;
+            float yaw = 0.0f, target_yaw = 0.0f;
+            bool initialised = false;
+        };
+        std::map<std::uint16_t, RemoteSmooth> remote_smooth;
         std::uint16_t net_target = 0xffff;
         float last_auto_attack = -100.0f;
         float last_auto_spell = -100.0f;
@@ -2540,6 +2549,16 @@ int main(int argc, char** argv) {
                             unit.max_hp = state.max_hp;
                             unit.team = state.team;
                             unit.anim = static_cast<int>(state.anim);
+                            auto& smooth = remote_smooth[state.id];
+                            smooth.target_x = state.x;
+                            smooth.target_z = state.z;
+                            smooth.target_yaw = state.yaw;
+                            if (!smooth.initialised) {
+                                smooth.initialised = true;
+                                smooth.x = state.x;
+                                smooth.z = state.z;
+                                smooth.yaw = state.yaw;
+                            }
                             static std::map<std::uint16_t, int> seen_anim;
                             if (state.id != own_unit && seen_anim[state.id] != unit.anim) {
                                 seen_anim[state.id] = unit.anim;
@@ -2614,6 +2633,26 @@ int main(int argc, char** argv) {
             for (auto& [remote_id, phase] : remote_phase) {
                 (void)remote_id;
                 phase += dt;
+            }
+            // Glide remote units towards their latest snapshot position.
+            for (auto& [smooth_id, smooth] : remote_smooth) {
+                (void)smooth_id;
+                const float dx = smooth.target_x - smooth.x;
+                const float dz = smooth.target_z - smooth.z;
+                const float distance = std::sqrt(dx * dx + dz * dz);
+                const float step = 380.0f * dt;
+                if (distance <= step || distance > 600.0f) {
+                    // Arrived, or teleported (respawn): snap instead of gliding.
+                    smooth.x = smooth.target_x;
+                    smooth.z = smooth.target_z;
+                } else if (distance > 1e-4f) {
+                    smooth.x += dx / distance * step;
+                    smooth.z += dz / distance * step;
+                }
+                float difference = smooth.target_yaw - smooth.yaw;
+                while (difference > 3.14159265f) difference -= 6.2831853f;
+                while (difference < -3.14159265f) difference += 6.2831853f;
+                smooth.yaw += difference * std::min(1.0f, 14.0f * dt);
             }
 
             // ---- draw ----
@@ -2752,10 +2791,19 @@ int main(int argc, char** argv) {
                     const auto texture_it = unit_textures.find(remote.model);
                     if (texture_it != unit_textures.end()) remote_texture = texture_it->second;
                 }
-                renderer.draw_scene(
-                    *remote_mesh, remote_texture, remote_bones, nullptr,
-                    model_matrix(lolview::Vec3{remote.x, remote.y, remote.z}, remote.yaw), view,
-                    proj, w, h);
+                float draw_x = remote.x;
+                float draw_z = remote.z;
+                float draw_yaw = remote.yaw;
+                const auto smooth_it = remote_smooth.find(remote.id);
+                if (smooth_it != remote_smooth.end()) {
+                    draw_x = smooth_it->second.x;
+                    draw_z = smooth_it->second.z;
+                    draw_yaw = smooth_it->second.yaw;
+                }
+                renderer.draw_scene(*remote_mesh, remote_texture, remote_bones, nullptr,
+                                    model_matrix(lolview::Vec3{draw_x, remote.y, draw_z},
+                                                 draw_yaw),
+                                    view, proj, w, h);
             }
 
             for (const auto& [sprite, batch] : batches) {
@@ -3026,9 +3074,16 @@ int main(int argc, char** argv) {
             for (const auto& remote : remote_units) {
                 if (remote.id == own_unit) continue;
                 if (remote.max_hp <= 0.0f) continue;
+                float bar_x = remote.x;
+                float bar_z = remote.z;
+                const auto bar_smooth = remote_smooth.find(remote.id);
+                if (bar_smooth != remote_smooth.end()) {
+                    bar_x = bar_smooth->second.x;
+                    bar_z = bar_smooth->second.z;
+                }
                 float remote_x = 0.0f, remote_y = 0.0f;
                 if (!project_to_screen(view, proj,
-                                       lolview::Vec3{remote.x, remote.y + 150.0f, remote.z}, w,
+                                       lolview::Vec3{bar_x, remote.y + 150.0f, bar_z}, w,
                                        h, remote_x, remote_y)) {
                     continue;
                 }
