@@ -412,6 +412,28 @@ lolview::Mat4 piece_matrix(const lolview::Vec3& position, const lolview::Vec3& c
            lolview::translation(lolview::Vec3{-center.x, -center.y, -center.z});
 }
 
+// Ray through a screen pixel for an explicit camera basis.
+void ray_from_basis(const lolview::Vec3& eye, const lolview::Vec3& forward_in,
+                    float screen_x, float screen_y, int width, int height,
+                    lolview::Vec3& origin, lolview::Vec3& direction) {
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
+    const float tan_half = std::tan(kFovDegrees * 0.5f * kPi / 180.0f);
+
+    const lolview::Vec3 forward = lolview::normalize(forward_in);
+    const lolview::Vec3 world_up{0.0f, 1.0f, 0.0f};
+    const lolview::Vec3 right =
+        g_right_handed ? lolview::normalize(lolview::cross(world_up, forward))
+                       : lolview::normalize(lolview::cross(forward, world_up));
+    const lolview::Vec3 up = g_right_handed ? lolview::cross(forward, right)
+                                            : lolview::cross(right, forward);
+
+    const float ndc_x = (2.0f * screen_x / static_cast<float>(width)) - 1.0f;
+    const float ndc_y = 1.0f - (2.0f * screen_y / static_cast<float>(height));
+    origin = eye;
+    direction = lolview::normalize(forward + right * (ndc_x * tan_half * aspect) +
+                                   up * (ndc_y * tan_half));
+}
+
 // Camera ray through a screen pixel.
 bool camera_ray(const LeagueCamera& camera, float screen_x, float screen_y, int width,
                 int height, lolview::Vec3& origin, lolview::Vec3& direction) {
@@ -1906,7 +1928,12 @@ int main(int argc, char** argv) {
                 float mouse_x = 0.0f, mouse_y = 0.0f;
                 SDL_GetMouseState(&mouse_x, &mouse_y);
                 lolview::Vec3 ray_origin, ray_direction;
-                camera_ray(camera, mouse_x, mouse_y, w, h, ray_origin, ray_direction);
+                if (free_mode) {
+                    ray_from_basis(free_camera.position, free_camera.forward(), mouse_x,
+                                   mouse_y, w, h, ray_origin, ray_direction);
+                } else {
+                    camera_ray(camera, mouse_x, mouse_y, w, h, ray_origin, ray_direction);
+                }
 
                 const auto hits = pick_pieces(map_pieces, ray_origin, ray_direction);
                 if (!hits.empty()) {
