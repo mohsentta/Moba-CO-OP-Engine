@@ -49,8 +49,8 @@ constexpr float kFovDegrees = 45.0f;
 // ---------------------------------------------------------------------------
 struct LeagueCamera {
     lolview::Vec3 focus{0.0f, 0.0f, 0.0f};  // ground point being looked at
-    float distance = 880.0f;
-    float pitch = 40.0f * kPi / 180.0f;
+    float distance = 1800.0f;
+    float pitch = 55.0f * kPi / 180.0f;
     bool locked = true;
 
     lolview::Vec3 eye() const {
@@ -450,7 +450,7 @@ int main(int argc, char** argv) {
         bool has_move_target = false;
         lolview::Vec3 move_target{};
 
-        const lolview::Vec3 dummy_position{0.0f, 0.0f, 460.0f};
+        const lolview::Vec3 dummy_position{0.0f, 0.0f, 700.0f};
         float dummy_hp = 1000.0f;
         const float dummy_max_hp = 1000.0f;
         float dummy_flash = 0.0f;
@@ -570,16 +570,16 @@ int main(int argc, char** argv) {
                         case SDL_SCANCODE_R:
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
+                        case SDL_SCANCODE_S:
+                            // League's stop command: cancel movement immediately.
+                            has_move_target = false;
+                            break;
                         case SDL_SCANCODE_Y:
                             camera.locked = !camera.locked;
                             break;
                         case SDL_SCANCODE_SPACE:
                             camera.focus = champion_position;
                             camera.locked = true;
-                            break;
-                        case SDL_SCANCODE_A:
-                        case SDL_SCANCODE_D:
-                            camera.locked = false;
                             break;
                         case SDL_SCANCODE_ESCAPE:
                             running = false;
@@ -638,7 +638,7 @@ int main(int argc, char** argv) {
 
             // ---- camera follow ----
             if (camera.locked) {
-                camera.focus = champion_position + lolview::Vec3{0.0f, 0.0f, 120.0f};
+                camera.focus = champion_position + lolview::Vec3{0.0f, 0.0f, 220.0f};
             }
 
             // ---- effects ----
@@ -810,7 +810,7 @@ int main(int argc, char** argv) {
                           "lolview practice tool");
             char status[160];
             std::snprintf(status, sizeof(status),
-                          "%.0f fps   |   Y: %s camera   |   RMB move   QWER cast aim with mouse",
+                          "%.0f fps   |   RMB move   S stop   QWER cast   Y %s camera",
                           fps, camera.locked ? "locked" : "free");
             draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
             draw->AddText(ImVec2(14.0f, static_cast<float>(h) - 22.0f),
