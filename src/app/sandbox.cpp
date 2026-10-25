@@ -80,6 +80,8 @@ struct MapPiece {
     std::string material;
     lolview::Vec3 center{};
     float radius = 0.0f;
+    lolview::Vec3 bounds_min{};
+    lolview::Vec3 bounds_max{};
 };
 
 struct TerrainGroup {
@@ -91,6 +93,22 @@ struct TerrainGroup {
     lolview::TexImage texture;
     bool has_texture = false;
     int alpha_mode = 0;  // 0 opaque, 1 cutout, 2 blended
+};
+
+// Free-fly "superman" camera (F2): WASD + mouse, no ground constraint.
+struct FreeCamera {
+    lolview::Vec3 position{0.0f, 1200.0f, -1000.0f};
+    float yaw = 0.0f;
+    float pitch = -0.5f;
+
+    lolview::Vec3 forward() const {
+        const float cp = std::cos(pitch);
+        return lolview::Vec3{std::sin(yaw) * cp, std::sin(pitch), std::cos(yaw) * cp};
+    }
+    lolview::Mat4 view() const {
+        return lolview::look_at(position, position + forward(),
+                                lolview::Vec3{0.0f, 1.0f, 0.0f});
+    }
 };
 
 struct ActiveEffect {    lolview::EffectKind kind = lolview::EffectKind::None;
@@ -112,6 +130,8 @@ struct Args {
     std::string pet_archive = "Map11";
     bool load_map = false;
     bool save_scene_on_start = false;
+    bool start_free_camera = false;
+    int select_piece = -1;
     std::string scene_path;
     std::string capture;
     std::string auto_cast;
@@ -256,6 +276,20 @@ lolview::Mat4 rotation_y(float angle) {
 
 lolview::Mat4 model_matrix(const lolview::Vec3& position, float yaw) {
     return lolview::translation(position) * rotation_y(yaw);
+}
+
+lolview::Vec3 transform_point(const lolview::Mat4& m, const lolview::Vec3& p) {
+    return lolview::Vec3{m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12],
+                         m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13],
+                         m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14]};
+}
+
+// Same pivot-based transform the renderer uses for a piece.
+lolview::Mat4 piece_matrix(const lolview::Vec3& position, const lolview::Vec3& center, float yaw,
+                           float scale) {
+    return lolview::translation(position) * lolview::translation(center) * rotation_y(yaw) *
+           lolview::scaling(lolview::Vec3{scale, scale, scale}) *
+           lolview::translation(lolview::Vec3{-center.x, -center.y, -center.z});
 }
 
 // Camera ray through a screen pixel.
@@ -414,6 +448,12 @@ int main(int argc, char** argv) {
             if (!next(args.scene_path)) return 2;
         } else if (arg == "--save-scene") {
             args.save_scene_on_start = true;
+        } else if (arg == "--free") {
+            args.start_free_camera = true;
+        } else if (arg == "--select") {
+            std::string value;
+            if (!next(value)) return 2;
+            args.select_piece = std::atoi(value.c_str());
         } else if (arg == "--capture") {
             if (!next(args.capture)) return 2;
         } else if (arg == "--auto-cast") {
@@ -886,6 +926,8 @@ int main(int argc, char** argv) {
                         const float dy = bounds.max[1] - bounds.min[1];
                         const float dz = bounds.max[2] - bounds.min[2];
                         piece.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+                        piece.bounds_min = {bounds.min[0], bounds.min[1], bounds.min[2]};
+                        piece.bounds_max = {bounds.max[0], bounds.max[1], bounds.max[2]};
 
                         std::string material_lower = piece.material;
                         std::transform(material_lower.begin(), material_lower.end(),
@@ -1023,6 +1065,14 @@ int main(int argc, char** argv) {
             save_scene();
         }
         LeagueCamera camera;
+        FreeCamera free_camera;
+        bool free_mode = false;
+
+        if (args.start_free_camera) free_mode = true;
+        if (args.select_piece >= 0 &&
+            args.select_piece < static_cast<int>(map_pieces.size())) {
+            selected_piece = args.select_piece;
+        }
         if (args.pitch_degrees > 0.0f) camera.pitch = args.pitch_degrees * kPi / 180.0f;
         if (args.distance > 0.0f) camera.distance = args.distance;
         lolview::Vec3 champion_position = spawn;
@@ -1111,7 +1161,7 @@ int main(int argc, char** argv) {
                 if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
 
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                    event.button.button == SDL_BUTTON_RIGHT) {
+                    event.button.button == SDL_BUTTON_RIGHT && !free_mode) {
                     float mx = 0.0f, my = 0.0f;
                     SDL_GetMouseState(&mx, &my);
                     int w = 0, h = 0;
@@ -1121,6 +1171,18 @@ int main(int argc, char** argv) {
                         pick_ground(camera, mx, my, w, h, ground_point)) {
                         move_target = ground_point;
                         has_move_target = true;
+                    }
+                }
+
+                if (event.type == SDL_EVENT_MOUSE_MOTION && free_mode) {
+                    // Right-drag looks around in free-fly mode.
+                    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
+                    if ((buttons & SDL_BUTTON_RMASK) != 0) {
+                        free_camera.yaw -= static_cast<float>(event.motion.xrel) * 0.0025f;
+                        free_camera.pitch = std::clamp(
+                            free_camera.pitch -
+                                static_cast<float>(event.motion.yrel) * 0.0025f,
+                            -1.5f, 1.5f);
                     }
                 }
 
@@ -1151,9 +1213,21 @@ int main(int argc, char** argv) {
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
                         case SDL_SCANCODE_S:
-                            // League's stop command: cancel movement immediately.
-                            has_move_target = false;
+                            // League's stop command (free camera uses S to fly back).
+                            if (!free_mode) has_move_target = false;
                             break;
+                        case SDL_SCANCODE_F2: {
+                            free_mode = !free_mode;
+                            if (free_mode) {
+                                free_camera.position = camera.eye();
+                                const lolview::Vec3 direction =
+                                    lolview::normalize(camera.focus - camera.eye());
+                                free_camera.yaw = std::atan2(direction.x, direction.z);
+                                free_camera.pitch =
+                                    std::asin(std::clamp(direction.y, -1.0f, 1.0f));
+                            }
+                            break;
+                        }
                         case SDL_SCANCODE_Y:
                             camera.locked = !camera.locked;
                             break;
@@ -1181,6 +1255,26 @@ int main(int argc, char** argv) {
 
             for (float& cooldown : cooldowns) cooldown = std::max(0.0f, cooldown - dt);
             dummy_flash = std::max(0.0f, dummy_flash - dt);
+
+            // ---- free-fly camera input ----
+            if (free_mode) {
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                const float speed = keys[SDL_SCANCODE_LSHIFT] ? 3600.0f : 1200.0f;
+                const lolview::Vec3 forward = free_camera.forward();
+                const lolview::Vec3 right = lolview::normalize(
+                    lolview::cross(forward, lolview::Vec3{0.0f, 1.0f, 0.0f}));
+                lolview::Vec3 delta{0.0f, 0.0f, 0.0f};
+                if (keys[SDL_SCANCODE_W]) delta = delta + forward;
+                if (keys[SDL_SCANCODE_S]) delta = delta - forward;
+                if (keys[SDL_SCANCODE_D]) delta = delta + right;
+                if (keys[SDL_SCANCODE_A]) delta = delta - right;
+                if (keys[SDL_SCANCODE_SPACE]) delta.y += 1.0f;
+                if (keys[SDL_SCANCODE_LCTRL]) delta.y -= 1.0f;
+                if (lolview::length(delta) > 1e-4f) {
+                    free_camera.position =
+                        free_camera.position + lolview::normalize(delta) * (speed * dt);
+                }
+            }
 
             // ---- movement ----
             bool moving = false;
@@ -1279,7 +1373,7 @@ int main(int argc, char** argv) {
             }
 
             renderer.begin_frame(w, h);
-            const lolview::Mat4 view = camera.view();
+            const lolview::Mat4 view = free_mode ? free_camera.view() : camera.view();
             const lolview::Mat4 proj = lolview::perspective(
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 1.0f, 8000.0f);
@@ -1291,14 +1385,8 @@ int main(int argc, char** argv) {
                         // Rotate and scale around the piece's own centre so the
                         // editor behaves predictably (vertices are baked in
                         // world space, so the pivot must be explicit).
-                        const lolview::Mat4 pivot = lolview::translation(piece.center);
-                        const lolview::Mat4 unpivot = lolview::translation(
-                            lolview::Vec3{-piece.center.x, -piece.center.y, -piece.center.z});
-                        const lolview::Mat4 model =
-                            lolview::translation(piece.position) * pivot *
-                            rotation_y(piece.yaw) *
-                            lolview::scaling(lolview::Vec3{piece.scale, piece.scale, piece.scale}) *
-                            unpivot;
+                        const lolview::Mat4 model = piece_matrix(
+                            piece.position, piece.center, piece.yaw, piece.scale);
                         renderer.draw_cached(piece.mesh_id, piece.texture_id, model, view, proj,
                                              w, h, mode);
                     }
@@ -1451,6 +1539,61 @@ int main(int argc, char** argv) {
                                     IM_COL32(0, 0, 0, 90), 1.0f, true);
             }
 
+            // outline of the selected piece
+            if (selected_piece >= 0 && selected_piece < static_cast<int>(map_pieces.size())) {
+                const auto& piece = map_pieces[selected_piece];
+                const lolview::Mat4 model =
+                    piece_matrix(piece.position, piece.center, piece.yaw, piece.scale);
+                lolview::Vec3 corners[8];
+                for (int i = 0; i < 8; ++i) {
+                    const lolview::Vec3 local{(i & 1) ? piece.bounds_max.x : piece.bounds_min.x,
+                                              (i & 2) ? piece.bounds_max.y : piece.bounds_min.y,
+                                              (i & 4) ? piece.bounds_max.z : piece.bounds_min.z};
+                    corners[i] = transform_point(model, local);
+                }
+                float sx[8] = {0.0f};
+                float sy[8] = {0.0f};
+                bool valid[8] = {false};
+                for (int i = 0; i < 8; ++i) {
+                    valid[i] = project_to_screen(view, proj, corners[i], w, h, sx[i], sy[i]);
+                }
+                static const int edges[12][2] = {{0, 1}, {1, 3}, {3, 2}, {2, 0}, {4, 5}, {5, 7},
+                                                 {7, 6}, {6, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+                (void)edges;
+
+                // Screen-space brackets: readable even when a piece spans the map.
+                float min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
+                int visible_corners = 0;
+                for (int i = 0; i < 8; ++i) {
+                    if (!valid[i]) continue;
+                    min_x = std::min(min_x, sx[i]);
+                    min_y = std::min(min_y, sy[i]);
+                    max_x = std::max(max_x, sx[i]);
+                    max_y = std::max(max_y, sy[i]);
+                    ++visible_corners;
+                }
+                if (visible_corners > 0) {
+                    const float pad = 5.0f;
+                    min_x = std::clamp(min_x - pad, 0.0f, static_cast<float>(w) - 1.0f);
+                    min_y = std::clamp(min_y - pad, 0.0f, static_cast<float>(h) - 1.0f);
+                    max_x = std::clamp(max_x + pad, 0.0f, static_cast<float>(w) - 1.0f);
+                    max_y = std::clamp(max_y + pad, 0.0f, static_cast<float>(h) - 1.0f);
+                    const ImU32 color = IM_COL32(120, 240, 160, 240);
+                    draw->AddRect(ImVec2(min_x, min_y), ImVec2(max_x, max_y),
+                                  IM_COL32(120, 240, 160, 70), 0.0f, 0, 1.0f);
+                    const float len = std::min(20.0f, (max_x - min_x) * 0.25f);
+                    const float len_y = std::min(20.0f, (max_y - min_y) * 0.25f);
+                    draw->AddLine(ImVec2(min_x, min_y), ImVec2(min_x + len, min_y), color, 2.0f);
+                    draw->AddLine(ImVec2(min_x, min_y), ImVec2(min_x, min_y + len_y), color, 2.0f);
+                    draw->AddLine(ImVec2(max_x, min_y), ImVec2(max_x - len, min_y), color, 2.0f);
+                    draw->AddLine(ImVec2(max_x, min_y), ImVec2(max_x, min_y + len_y), color, 2.0f);
+                    draw->AddLine(ImVec2(min_x, max_y), ImVec2(min_x + len, max_y), color, 2.0f);
+                    draw->AddLine(ImVec2(min_x, max_y), ImVec2(min_x, max_y - len_y), color, 2.0f);
+                    draw->AddLine(ImVec2(max_x, max_y), ImVec2(max_x - len, max_y), color, 2.0f);
+                    draw->AddLine(ImVec2(max_x, max_y), ImVec2(max_x, max_y - len_y), color, 2.0f);
+                }
+            }
+
             // move-target marker
             if (has_move_target) {
                 float marker_x = 0.0f, marker_y = 0.0f;
@@ -1465,8 +1608,10 @@ int main(int argc, char** argv) {
                           "lolview practice tool");
             char status[160];
             std::snprintf(status, sizeof(status),
-                          "%.0f fps   |   RMB move   S stop   QWER cast   Y %s camera",
-                          fps, camera.locked ? "locked" : "free");
+                          "%.0f fps   |   RMB move   S stop   QWER cast   Y %s camera   "
+                          "F2 %s (WASD)",
+                          fps, camera.locked ? "locked" : "free",
+                          free_mode ? "free-fly ON" : "free-fly off");
             draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
             draw->AddText(ImVec2(14.0f, static_cast<float>(h) - 22.0f),
                           IM_COL32(120, 130, 145, 190),
