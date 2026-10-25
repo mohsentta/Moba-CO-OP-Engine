@@ -1225,6 +1225,7 @@ int main(int argc, char** argv) {
         }
         LeagueCamera camera;
         FreeCamera free_camera;
+        float free_speed = 1200.0f;  // wheel adjusts this in editor mode
         bool free_mode = false;
         bool editor_mode = false;  // F2: free-fly camera + editor window
 
@@ -1351,8 +1352,14 @@ int main(int argc, char** argv) {
                 }
 
                 if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                    camera.distance = std::clamp(
-                        camera.distance * (1.0f - event.wheel.y * 0.1f), 900.0f, 2400.0f);
+                    if (free_mode) {
+                        // In editor mode the wheel is the fly-speed control.
+                        free_speed = std::clamp(free_speed * (1.0f + event.wheel.y * 0.2f),
+                                                80.0f, 60000.0f);
+                    } else {
+                        camera.distance = std::clamp(
+                            camera.distance * (1.0f - event.wheel.y * 0.1f), 900.0f, 2400.0f);
+                    }
                 }
 
                 if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
@@ -1437,7 +1444,7 @@ int main(int argc, char** argv) {
             // ---- free-fly camera input ----
             if (free_mode) {
                 const bool* keys = SDL_GetKeyboardState(nullptr);
-                const float speed = keys[SDL_SCANCODE_LSHIFT] ? 3600.0f : 1200.0f;
+                const float speed = free_speed * (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 1.0f);
                 const lolview::Vec3 forward = free_camera.forward();
                 const lolview::Vec3 right = lolview::normalize(
                     lolview::cross(forward, lolview::Vec3{0.0f, 1.0f, 0.0f}));
@@ -1555,7 +1562,7 @@ int main(int argc, char** argv) {
             const lolview::Mat4 view = free_mode ? free_camera.view() : camera.view();
             const lolview::Mat4 proj = lolview::perspective(
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
-                1.0f, 8000.0f);
+                2.0f, 40000.0f);
 
             if (!map_pieces.empty()) {
                 for (int mode = 0; mode <= 2; ++mode) {
@@ -1790,8 +1797,7 @@ int main(int argc, char** argv) {
                           "%.0f fps   |   RMB move   S stop   QWER cast   -/+ rotate (%.0f deg)   "
                           "Y %s   F2 %s",
                           fps, camera.yaw * 180.0f / kPi, camera.locked ? "locked" : "free",
-                          editor_mode ? "editor ON (WASD fly)" : "editor");
-            draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
+                          editor_mode ? "editor ON (WASD fly)" : "editor");            draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
             draw->AddText(ImVec2(14.0f, static_cast<float>(h) - 22.0f),
                           IM_COL32(120, 130, 145, 190),
                           "not affiliated with Riot Games - assets read from your own install");
@@ -1803,6 +1809,7 @@ int main(int argc, char** argv) {
                 ImGui::SetNextWindowSize(ImVec2(380.0f, 540.0f), ImGuiCond_FirstUseEver);
                 ImGui::Begin("Map editor");
                 ImGui::Text("%zu pieces   |   %s", map_pieces.size(), editor_status.c_str());
+                ImGui::Text("fly speed %.0f  (wheel up/down)   |   click selects", free_speed);
                 if (ImGui::Button("Save scene")) save_scene();
                 ImGui::SameLine();
                 if (ImGui::Button("Reload")) load_scene();
