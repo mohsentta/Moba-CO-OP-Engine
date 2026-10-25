@@ -1534,6 +1534,8 @@ int main(int argc, char** argv) {
         bool walk_path_closed = false;
         bool blocked_path_closed = false;
         bool obstacle_mode = false;  // Tab: draw blocked (red) polygons
+        int drag_index = -1;         // vertex being dragged, -1 when none
+        bool drag_obstacle = false;
         std::string walk_path_file = "scripts/paths.txt";
 
         if (args.start_free_camera) {
@@ -1918,7 +1920,7 @@ int main(int argc, char** argv) {
 
                     switch (event.key.scancode) {
                         case SDL_SCANCODE_Q:
-                            if (editor_mode) break;
+                            if (editor_mode || path_edit) break;
                             // Jinx-style weapons: Q swaps the animation set
                             // between minigun and rocket launcher.
                             if (clips.count("rlauncher_run") || clips.count("rlauncher_idle1")) {
@@ -1928,19 +1930,19 @@ int main(int argc, char** argv) {
                             }
                             break;
                                                 case SDL_SCANCODE_W:
-                            if (editor_mode) break;
+                            if (editor_mode || path_edit) break;
                             start_cast(lolview::EffectKind::Spell2, 1, aim);
                             break;
                         case SDL_SCANCODE_E:
-                            if (editor_mode) break;
+                            if (editor_mode || path_edit) break;
                             start_cast(lolview::EffectKind::Spell3, 2, aim);
                             break;
                         case SDL_SCANCODE_R:
-                            if (editor_mode) break;
+                            if (editor_mode || path_edit) break;
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
                         case SDL_SCANCODE_A:
-                            if (editor_mode) break;
+                            if (editor_mode || path_edit) break;
                             // Basic attack only when something is actually in range.
                             if (net_target == 0xffff) break;
                             ++attack_variant;
@@ -2554,6 +2556,7 @@ int main(int argc, char** argv) {
             ImGui::NewFrame();
 
             // Walkable-path editing: left click places a vertex on the ground.
+            // Path editor clicks never select map pieces.
             if (path_edit && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
                 !ImGui::GetIO().WantCaptureMouse &&
                 !(obstacle_mode ? blocked_path_closed : walk_path_closed)) {
@@ -2569,17 +2572,72 @@ int main(int argc, char** argv) {
                 if (std::fabs(direction.y) > 1e-5f) {
                     const float t = -origin.y / direction.y;
                     if (t >= 0.0f) {
-                        auto& target = obstacle_mode ? blocked_path : walk_path;
-                        target.push_back(origin + direction * t);
-                        std::printf("  path    : %s vertex %zu at (%.0f, %.0f)\n",
-                                    obstacle_mode ? "obstacle" : "walkable", target.size(),
-                                    target.back().x, target.back().z);
+                        // Clicking close to an existing vertex grabs it.
+                        int hit = -1;
+                        bool hit_obstacle = false;
+                        float best = 14.0f;
+                        const auto hit_test = [&](const std::vector<lolview::Vec3>& points,
+                                                  bool obstacle) {
+                            for (std::size_t i = 0; i < points.size(); ++i) {
+                                float sx = 0.0f, sy = 0.0f;
+                                if (!project_to_screen(view, proj, points[i], w, h, sx, sy)) {
+                                    continue;
+                                }
+                                const float distance = std::sqrt((sx - mouse_x) * (sx - mouse_x) +
+                                                                 (sy - mouse_y) * (sy - mouse_y));
+                                if (distance < best) {
+                                    best = distance;
+                                    hit = static_cast<int>(i);
+                                    hit_obstacle = obstacle;
+                                }
+                            }
+                        };
+                        hit_test(walk_path, false);
+                        hit_test(blocked_path, true);
+                        if (hit >= 0) {
+                            drag_index = hit;
+                            drag_obstacle = hit_obstacle;
+                            std::printf("  path    : grabbed %s vertex %d\n",
+                                        hit_obstacle ? "obstacle" : "walkable", hit);
+                        } else {
+                            auto& target = obstacle_mode ? blocked_path : walk_path;
+                            target.push_back(origin + direction * t);
+                            std::printf("  path    : %s vertex %zu at (%.0f, %.0f)\n",
+                                        obstacle_mode ? "obstacle" : "walkable", target.size(),
+                                        target.back().x, target.back().z);
+                        }
                     }
                 }
             }
 
+            // Dragging a grabbed vertex follows the cursor along the ground.
+            if (path_edit && drag_index >= 0) {
+                if ((SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) != 0) {
+                    float mouse_x = 0.0f, mouse_y = 0.0f;
+                    SDL_GetMouseState(&mouse_x, &mouse_y);
+                    lolview::Vec3 origin, direction;
+                    if (free_mode) {
+                        ray_from_basis(free_camera.position, free_camera.forward(), mouse_x,
+                                       mouse_y, w, h, origin, direction);
+                    } else {
+                        camera_ray(camera, mouse_x, mouse_y, w, h, origin, direction);
+                    }
+                    if (std::fabs(direction.y) > 1e-5f) {
+                        const float t = -origin.y / direction.y;
+                        if (t >= 0.0f) {
+                            auto& points = drag_obstacle ? blocked_path : walk_path;
+                            if (drag_index < static_cast<int>(points.size())) {
+                                points[static_cast<std::size_t>(drag_index)] =
+                                    origin + direction * t;
+                            }
+                        }
+                    }
+                } else {
+                    drag_index = -1;
+                }
+            }
             // Click in the world selects a piece, but only while editing.
-            if (editor_mode && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+            if (editor_mode && !path_edit && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
                 !ImGui::GetIO().WantCaptureMouse && !map_pieces.empty()) {
                 float mouse_x = 0.0f, mouse_y = 0.0f;
                 SDL_GetMouseState(&mouse_x, &mouse_y);
@@ -2654,6 +2712,16 @@ int main(int argc, char** argv) {
                     float sx = 0, sy = 0;
                     if (!project_to_screen(view, proj, point, w, h, sx, sy)) continue;
                     draw->AddCircleFilled(ImVec2(sx, sy), 5.0f, IM_COL32(255, 255, 255, 235));
+                }                if (drag_index >= 0) {
+                    const auto& points = drag_obstacle ? blocked_path : walk_path;
+                    if (drag_index < static_cast<int>(points.size())) {
+                        float sx = 0.0f, sy = 0.0f;
+                        if (project_to_screen(view, proj, points[static_cast<std::size_t>(drag_index)],
+                                              w, h, sx, sy)) {
+                            draw->AddCircle(ImVec2(sx, sy), 10.0f, IM_COL32(255, 220, 90, 255), 0,
+                                            2.5f);
+                        }
+                    }
                 }
             }
 
@@ -2674,7 +2742,7 @@ int main(int argc, char** argv) {
             const float start_y = static_cast<float>(h) - 74.0f;
             const char* keys[4] = {"Q", "W", "E", "R"};
 
-            for (int i = 0; i < 4 && !editor_mode; ++i) {
+            for (int i = 0; i < 4 && !editor_mode && !path_edit; ++i) {
                 const ImVec2 top_left(start_x + i * (icon + gap), start_y);
                 const ImVec2 bottom_right(top_left.x + icon, top_left.y + icon);
 
@@ -2827,6 +2895,27 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // ---- path editor help (F3) ----
+            if (path_edit) {
+                ImGui::SetNextWindowPos(ImVec2(16.0f, 150.0f), ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f), ImGuiCond_FirstUseEver);
+                ImGui::Begin("Path editor");
+                ImGui::Text("%zu walkable / %zu obstacle vertices", walk_path.size(),
+                            blocked_path.size());
+                ImGui::Text("Drawing: %s   (Tab)",
+                            obstacle_mode ? "obstacle (red)" : "walkable (cyan)");
+                ImGui::Separator();
+                ImGui::BulletText("Left click ground: add a vertex");
+                ImGui::BulletText("Left click a vertex: grab it, drag to move");
+                ImGui::BulletText("Backspace: delete the last vertex");
+                ImGui::BulletText("Enter: close the polygon");
+                ImGui::BulletText("F5: save scripts/paths.txt");
+                ImGui::BulletText("F3: leave the path editor");
+                ImGui::Separator();
+                ImGui::TextDisabled("Cyan: where players may walk.");
+                ImGui::TextDisabled("Red: blocked. It wins over cyan.");
+                ImGui::End();
+            }
             // ---- map editor (F2) ----
             // Hidden while the path editor is open so it does not cover the canvas.
             if (editor_mode && !path_edit && !map_pieces.empty()) {
