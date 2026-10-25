@@ -48,6 +48,33 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kFovDegrees = 45.0f;
 
+// Camera handedness. Riot's engine is right-handed; our original basis was
+// left-handed (right = cross(forward, up)), which mirrored every image.
+bool g_right_handed = true;
+
+// Same as lolview::look_at but with a right-handed basis (right = cross(up, f)).
+lolview::Mat4 look_at_right_handed(const lolview::Vec3& eye, const lolview::Vec3& center,
+                                   const lolview::Vec3& up) {
+    const lolview::Vec3 f = lolview::normalize(center - eye);
+    const lolview::Vec3 s = lolview::normalize(lolview::cross(up, f));
+    const lolview::Vec3 u = lolview::cross(f, s);
+
+    lolview::Mat4 out = lolview::Mat4::identity();
+    out.m[0] = s.x;  out.m[4] = s.y;  out.m[8] = s.z;
+    out.m[1] = u.x;  out.m[5] = u.y;  out.m[9] = u.z;
+    out.m[2] = -f.x; out.m[6] = -f.y; out.m[10] = -f.z;
+    out.m[12] = -(s.x * eye.x + s.y * eye.y + s.z * eye.z);
+    out.m[13] = -(u.x * eye.x + u.y * eye.y + u.z * eye.z);
+    out.m[14] = f.x * eye.x + f.y * eye.y + f.z * eye.z;
+    return out;
+}
+
+lolview::Mat4 view_matrix(const lolview::Vec3& eye, const lolview::Vec3& center,
+                          const lolview::Vec3& up) {
+    return g_right_handed ? look_at_right_handed(eye, center, up)
+                          : lolview::look_at(eye, center, up);
+}
+
 // ---------------------------------------------------------------------------
 // League-style camera: fixed pitch, no roll, follows the champion when locked.
 // ---------------------------------------------------------------------------
@@ -65,7 +92,7 @@ struct LeagueCamera {
                              focus.z - std::cos(yaw) * cos_pitch * distance};
     }
     lolview::Mat4 view() const {
-        return lolview::look_at(eye(), focus, lolview::Vec3{0.0f, 1.0f, 0.0f});
+        return view_matrix(eye(), focus, lolview::Vec3{0.0f, 1.0f, 0.0f});
     }
 };
 
@@ -109,8 +136,8 @@ struct FreeCamera {
         return lolview::Vec3{std::sin(yaw) * cp, std::sin(pitch), std::cos(yaw) * cp};
     }
     lolview::Mat4 view() const {
-        return lolview::look_at(position, position + forward(),
-                                lolview::Vec3{0.0f, 1.0f, 0.0f});
+        return view_matrix(position, position + forward(),
+                           lolview::Vec3{0.0f, 1.0f, 0.0f});
     }
 };
 
@@ -134,9 +161,12 @@ struct Args {
     bool load_map = false;
     bool save_scene_on_start = false;
     bool start_free_camera = false;
-    // The shipped map geometry reads mirrored; flip it in the data so the
-    // camera and controls keep their normal handedness.
-    bool mirror_x = true;
+    // Our camera basis was left-handed (looking +Z with up +Y gave right = -X),
+    // which mirrored every image. Right-handed is the default; --lh-view keeps
+    // the old behaviour for comparison.
+    bool right_handed_view = true;
+    // Legacy data-level mirror, kept for comparison only.
+    bool mirror_x = false;
     int select_piece = -1;
     std::string scene_path;
     std::string capture;
@@ -307,9 +337,12 @@ bool camera_ray(const LeagueCamera& camera, float screen_x, float screen_y, int 
 
     origin = camera.eye();
     const lolview::Vec3 forward = lolview::normalize(camera.focus - origin);
+    const lolview::Vec3 world_up{0.0f, 1.0f, 0.0f};
     const lolview::Vec3 right =
-        lolview::normalize(lolview::cross(forward, lolview::Vec3{0.0f, 1.0f, 0.0f}));
-    const lolview::Vec3 up = lolview::cross(right, forward);
+        g_right_handed ? lolview::normalize(lolview::cross(world_up, forward))
+                       : lolview::normalize(lolview::cross(forward, world_up));
+    const lolview::Vec3 up = g_right_handed ? lolview::cross(forward, right)
+                                            : lolview::cross(right, forward);
 
     const float ndc_x = (2.0f * screen_x / static_cast<float>(width)) - 1.0f;
     const float ndc_y = 1.0f - (2.0f * screen_y / static_cast<float>(height));
@@ -495,8 +528,12 @@ int main(int argc, char** argv) {
             args.start_free_camera = true;
         } else if (arg == "--mirror-x") {
             args.mirror_x = true;
+        } else if (arg == "--raw-projection") {
+            args.right_handed_view = false;
         } else if (arg == "--no-mirror") {
             args.mirror_x = false;
+        } else if (arg == "--lh-view") {
+            args.right_handed_view = false;
         } else if (arg == "--select") {
             std::string value;
             if (!next(value)) return 2;
@@ -547,6 +584,7 @@ int main(int argc, char** argv) {
     }
 
     try {
+        g_right_handed = args.right_handed_view;
         // ---- assets from the user's install ----
         const auto mesh_bytes =
             resolve_chunk(args.game_dir, args.archive, skin_path(args.champion, ".skn"));
@@ -1584,7 +1622,7 @@ int main(int argc, char** argv) {
 
             renderer.begin_frame(w, h);
             const lolview::Mat4 view = free_mode ? free_camera.view() : camera.view();
-            const lolview::Mat4 proj = lolview::perspective(
+            lolview::Mat4 proj = lolview::perspective(
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 2.0f, 40000.0f);
 
