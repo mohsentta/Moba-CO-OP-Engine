@@ -71,10 +71,12 @@ void Wad::walk_entries(const std::uint8_t* bytes,
     while (true) {
         const auto entry = parse_entry(bytes, size, o);
         if (!entry) break;
-        if (!compression_known(entry->compression)) break;
-        if (entry->compressed_size == 0 || entry->uncompressed_size == 0) break;
+        // TOCs contain empty slots (zero sizes) and codecs beyond our table;
+        // neither invalidates the entry stream. Only structurally impossible
+        // records end the walk.
+        if (entry->compression > 0x40) break;
         if (static_cast<std::uint64_t>(entry->offset) + entry->compressed_size > size) break;
-        if (entry->offset < o + kTocEntrySize) break;
+        if (entry->offset != 0 && entry->offset < o + kTocEntrySize) break;
         out.push_back(*entry);
         o += kTocEntrySize;
         if (out.size() > kMaxEntries) break;
@@ -125,19 +127,27 @@ Wad Wad::open(const std::filesystem::path& path) {
         walk_entries(bytes, len, start, entries);
         if (entries.empty()) continue;
 
-        // The structural walk can run past the real TOC into chunk data; shrink
-        // until every payload starts after the TOC that describes it.
-        std::size_t n = entries.size();
-        while (n > 0) {
-            std::size_t min_off = std::numeric_limits<std::size_t>::max();
-            for (std::size_t i = 0; i < n; ++i) {
-                min_off = std::min(min_off, static_cast<std::size_t>(entries[i].offset));
-            }
-            const std::size_t allowed = (min_off > start ? min_off - start : 0) / kTocEntrySize;
-            if (allowed >= n) break;
-            n = allowed;
+        // The first payload starts exactly where the TOC ends, so the true
+        // entry count follows from the smallest non-zero payload offset. This
+        // is exact where a structural walk alone would overrun into data.
+        std::size_t min_off = std::numeric_limits<std::size_t>::max();
+        for (const auto& e : entries) {
+            if (e.offset == 0) continue;
+            min_off = std::min(min_off, static_cast<std::size_t>(e.offset));
         }
-        entries.resize(n);
+        if (min_off == std::numeric_limits<std::size_t>::max()) continue;
+        const std::size_t count =
+            (min_off > start ? min_off - start : 0) / kTocEntrySize;
+        if (count == 0) continue;
+        if (count < entries.size()) entries.resize(count);
+
+        // Drop the empty TOC slots now that the count is known.
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [](const WadEntry& e) {
+                                         return e.compressed_size == 0 &&
+                                                e.uncompressed_size == 0;
+                                     }),
+                      entries.end());
         if (entries.empty()) continue;
 
         const std::size_t toc_end = start + entries.size() * kTocEntrySize;
