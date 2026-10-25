@@ -362,6 +362,17 @@ int main(int argc, char** argv) {
 
     if (!paths_file.empty() && world.area.load(paths_file)) {
         world.grid.build(world.area);
+        for (std::size_t i = 0; i < world.area.polygons.size(); ++i) {
+            float min_x = 1e9f, max_x = -1e9f, min_z = 1e9f, max_z = -1e9f;
+            for (const auto& point : world.area.polygons[i]) {
+                min_x = std::min(min_x, point.first);
+                max_x = std::max(max_x, point.first);
+                min_z = std::min(min_z, point.second);
+                max_z = std::max(max_z, point.second);
+            }
+            std::printf("server: polygon %zu bounds x[%.0f, %.0f] z[%.0f, %.0f]\n", i, min_x,
+                        max_x, min_z, max_z);
+        }
         std::printf("server: %zu walkable / %zu obstacle polygon(s) from %s, nav grid %dx%d\n",
                     world.area.polygons.size(), world.area.obstacles.size(),
                     paths_file.c_str(), world.grid.width(), world.grid.height());
@@ -407,6 +418,20 @@ int main(int argc, char** argv) {
                 world.units.push_back(unit);
                 client.unit_id = unit.id;
                 world.player_units[client.player_id] = unit.id;
+                // Spawn points may fall outside the authored area; pull the
+                // player inside rather than leaving them stuck.
+                if (world.grid.valid() &&
+                    !world.area.contains(world.units.back().x, world.units.back().z)) {
+                    float inside_x = 0.0f, inside_z = 0.0f;
+                    if (world.grid.nearest_walkable(world.units.back().x, world.units.back().z,
+                                                    inside_x, inside_z)) {
+                        std::printf("server: player %u spawn (%.0f, %.0f) outside the area, moved to (%.0f, %.0f)\n",
+                                    client.player_id, world.units.back().x, world.units.back().z,
+                                    inside_x, inside_z);
+                        world.units.back().x = inside_x;
+                        world.units.back().z = inside_z;
+                    }
+                }
                 clients.push_back(client);
 
                 lolview::net::Welcome welcome;
@@ -423,15 +448,29 @@ int main(int argc, char** argv) {
                     if (client.player_id != intent->player_id) continue;
                     if (Unit* unit = world.find(client.unit_id)) {
                         if (intent->kind == lolview::net::IntentKind::Move) {
-                            if (!world.area.contains(intent->x, intent->z)) {
-                                std::printf("server: player %u move rejected: outside the walkable area\n",
-                                            intent->player_id);
-                                break;
+                            float target_x = intent->x;
+                            float target_z = intent->z;
+                            if (!world.area.contains(target_x, target_z)) {
+                                // Clicking outside walks to the closest legal point
+                                // instead of doing nothing.
+                                float inside_x = 0.0f, inside_z = 0.0f;
+                                if (!world.grid.valid() ||
+                                    !world.grid.nearest_walkable(target_x, target_z, inside_x,
+                                                                 inside_z)) {
+                                    std::printf("server: player %u move rejected: (%.0f, %.0f) is outside and no walkable point was found\n",
+                                                intent->player_id, intent->x, intent->z);
+                                    break;
+                                }
+                                std::printf("server: player %u target (%.0f, %.0f) outside, snapping to (%.0f, %.0f)\n",
+                                            intent->player_id, target_x, target_z, inside_x,
+                                            inside_z);
+                                target_x = inside_x;
+                                target_z = inside_z;
                             }
                             if (world.grid.valid()) {
                                 std::vector<std::pair<float, float>> route;
-                                if (!world.grid.find_path(unit->x, unit->z, intent->x,
-                                                          intent->z, route)) {
+                                if (!world.grid.find_path(unit->x, unit->z, target_x,
+                                                          target_z, route)) {
                                     std::printf("server: player %u move rejected: no path\n",
                                                 intent->player_id);
                                     break;
@@ -459,6 +498,22 @@ int main(int argc, char** argv) {
 
         // ---- simulate ----
         const float walk_step = 380.0f * kTickSeconds;
+        // Players are never left outside the walkable area.
+        if (world.grid.valid()) {
+            for (auto& unit : world.units) {
+                if (unit.team != 0) continue;
+                if (world.area.contains(unit.x, unit.z)) continue;
+                float inside_x = 0.0f, inside_z = 0.0f;
+                if (world.grid.nearest_walkable(unit.x, unit.z, inside_x, inside_z)) {
+                    std::printf("server: unit #%u outside the area at (%.0f, %.0f), pulled to (%.0f, %.0f)\n",
+                                unit.id, unit.x, unit.z, inside_x, inside_z);
+                    unit.x = inside_x;
+                    unit.z = inside_z;
+                    unit.path.clear();
+                    unit.path_index = 0;
+                }
+            }
+        }
         for (auto& unit : world.units) {
             while (unit.path_index < unit.path.size()) {
                 const auto [wx, wz] = unit.path[unit.path_index];

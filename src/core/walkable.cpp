@@ -134,6 +134,44 @@ bool NavGrid::point_walkable(float x, float z) const {
     return cell_walkable(cell.first, cell.second);
 }
 
+bool NavGrid::nearest_walkable(float x, float z, float& out_x, float& out_z) const {
+    if (!valid()) return false;
+    const auto [start_cx, start_cz] = cell_of(x, z);
+    if (cell_walkable(start_cx, start_cz)) {
+        out_x = x;
+        out_z = z;
+        return true;
+    }
+
+    // Expanding ring search around the start cell.
+    const int max_radius = std::max(width_, height_);
+    for (int radius = 1; radius <= max_radius; ++radius) {
+        bool found = false;
+        float best = std::numeric_limits<float>::max();
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                // Only the ring itself.
+                if (std::max(std::abs(dx), std::abs(dz)) != radius) continue;
+                const int cx = start_cx + dx;
+                const int cz = start_cz + dz;
+                if (!cell_walkable(cx, cz)) continue;
+                const auto centre = centre_of(cx, cz);
+                const float ddx = centre.first - x;
+                const float ddz = centre.second - z;
+                const float distance = ddx * ddx + ddz * ddz;
+                if (distance < best) {
+                    best = distance;
+                    out_x = centre.first;
+                    out_z = centre.second;
+                    found = true;
+                }
+            }
+        }
+        if (found) return true;
+    }
+    return false;
+}
+
 bool NavGrid::find_path(float start_x, float start_z, float goal_x, float goal_z,
                         std::vector<std::pair<float, float>>& out) const {
     out.clear();

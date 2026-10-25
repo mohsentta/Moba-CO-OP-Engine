@@ -49,6 +49,10 @@ public:
     bool find_path(float start_x, float start_z, float goal_x, float goal_z,
                    std::vector<std::pair<float, float>>& out) const;
 
+    // Nearest walkable cell centre to a world point (used to pull units that end
+    // up outside the area back inside). False when no cell is walkable.
+    bool nearest_walkable(float x, float z, float& out_x, float& out_z) const;
+
 private:
     std::pair<int, int> cell_of(float x, float z) const;
     std::pair<float, float> centre_of(int cx, int cz) const;

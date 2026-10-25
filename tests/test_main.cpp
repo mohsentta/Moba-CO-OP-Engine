@@ -475,6 +475,13 @@ void test_walk_area() {
     for (const auto& point : route) {
         CHECK(blocked.contains(point.first, point.second));
     }
+    // A point outside the area can be pulled to the nearest walkable cell.
+    float inside_x = 0.0f, inside_z = 0.0f;
+    CHECK(grid.nearest_walkable(-70.0f, 0.0f, inside_x, inside_z));
+    CHECK(blocked.contains(inside_x, inside_z));
+    CHECK(grid.nearest_walkable(-300.0f, -300.0f, inside_x, inside_z));
+    CHECK(blocked.contains(inside_x, inside_z));
+
     // A target outside the walkable area has no route.
     std::vector<std::pair<float, float>> unreachable;
     CHECK(!grid.find_path(-90.0f, 0.0f, 500.0f, 0.0f, unreachable));
