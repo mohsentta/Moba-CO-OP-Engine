@@ -2540,6 +2540,14 @@ int main(int argc, char** argv) {
                             unit.max_hp = state.max_hp;
                             unit.team = state.team;
                             unit.anim = static_cast<int>(state.anim);
+                            static std::map<std::uint16_t, int> seen_anim;
+                            if (state.id != own_unit && seen_anim[state.id] != unit.anim) {
+                                seen_anim[state.id] = unit.anim;
+                                static const char* names[] = {"Idle", "Run", "Attack", "Cast",
+                                                              "Dead"};
+                                std::printf("  remote  : unit #%u -> %s\n", state.id,
+                                            names[unit.anim < 5 ? unit.anim : 0]);
+                            }
                             if (unit_models.find(unit.model) == unit_models.end()) {
                                 load_extra_model(unit.model);
                             }
