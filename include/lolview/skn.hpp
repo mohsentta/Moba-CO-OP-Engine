@@ -55,6 +55,10 @@ public:
                           std::vector<SknVertex> vertices,
                           std::vector<std::uint16_t> indices);
 
+    // Mirrors the mesh across X (Riot's data reads mirrored in this renderer):
+    // negates X on positions and normals and reverses triangle winding.
+    void mirror_x();
+
     std::uint16_t major_version() const noexcept { return major_; }
     std::uint16_t minor_version() const noexcept { return minor_; }
     const std::vector<SknMaterial>& materials() const noexcept { return materials_; }

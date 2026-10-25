@@ -46,4 +46,19 @@ Skn Skn::from_parts(std::vector<SknMaterial> materials, std::vector<SknVertex> v
     return mesh;
 }
 
+void Skn::mirror_x() {
+    for (auto& vertex : vertices_) {
+        vertex.position[0] = -vertex.position[0];
+        vertex.normal[0] = -vertex.normal[0];
+    }
+    for (std::size_t i = 0; i + 2 < indices_.size(); i += 3) {
+        std::swap(indices_[i + 1], indices_[i + 2]);
+    }
+    std::swap(bbox_[0], bbox_[3]);
+    bbox_[0] = -bbox_[0];
+    bbox_[3] = -bbox_[3];
+    bbox_[6] = -bbox_[6];
+    bbox_[9] = -bbox_[9];
+}
+
 }  // namespace lolview

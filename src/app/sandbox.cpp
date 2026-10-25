@@ -560,7 +560,8 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        const lolview::Skn mesh = lolview::Skn::parse(*mesh_bytes);
+        lolview::Skn mesh = lolview::Skn::parse(*mesh_bytes);
+        if (args.mirror_x) mesh.mirror_x();
         const lolview::Skl skeleton = lolview::Skl::parse(*skeleton_bytes);
         lolview::TexImage texture;
         const bool has_texture = texture_bytes.has_value();
@@ -655,6 +656,7 @@ int main(int argc, char** argv) {
             } else {
                 try {
                     pet_mesh = lolview::Skn::parse(*mesh_bytes);
+                    if (args.mirror_x) pet_mesh.mirror_x();
                     has_pet = true;
                     if (texture_bytes) {
                         pet_texture = lolview::decode_tex(*texture_bytes);
@@ -1510,7 +1512,13 @@ int main(int argc, char** argv) {
             clip_time += dt;
             const lolview::Anm& clip = clips.at(current_clip);
             const float sampled = std::fmod(clip_time, std::max(clip.duration(), 0.01f));
-            const auto bones = lolview::compute_skin_matrices(skeleton, &clip, sampled);
+            auto bones = lolview::compute_skin_matrices(skeleton, &clip, sampled);
+            if (args.mirror_x) {
+                // Conjugate by the X mirror so the mirrored mesh keeps its pose.
+                lolview::Mat4 flip = lolview::Mat4::identity();
+                flip.m[0] = -1.0f;
+                for (auto& bone : bones) bone = flip * bone * flip;
+            }
 
             // ---- camera follow ----
             if (camera.locked) {
