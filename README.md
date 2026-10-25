@@ -12,16 +12,24 @@ in C++20. It reads assets directly from a League of Legends installation that
 
 ## Status
 
+**Goal:** recreate old co-op modes — **Doom Bots**, **Star Guardian Invasion**,
+**Odyssey Extraction** — playable co-op, from the player's own install.
+
 | Milestone | Scope | State |
 |---|---|---|
-| M0 | install resolution, WAD index, chunk hashing | done |
-| M1 | zstd/gzip payload decoding, `--extract`, path discovery | done |
-| M2 | SKN mesh parsing (`--mesh`) | done |
-| M2b | OpenGL 4.6 renderer, offscreen PNG output (`--render`) | done |
-| M4 | TEX/BCn textures and materials | done |
-| M3 | SKL skeleton + ANM animation playback with GPU skinning | done |
-| M5 | particle system + ability effects (`--effect q|w|e|r`) | done |
-| M6 | interactive practice sandbox (`lolview_sandbox`) | done |
+| M0 | foundation: install/WAD/chunk hashing, payload decoding, SKN/SKL/ANM/TEX readers, GL renderer, sandbox | done |
+| M0b | world content: mapgeo terrain (586 pieces, 343 textures, alpha), jungle pets, minions, scenario units | done |
+| M0c | editor: free-fly camera, triangle picking, wireframe highlight, transforms, undo, scene save/load | done |
+| M1 | **animation completeness** — `r3d2canm` parser done, evaluator outstanding | in progress |
+| M2 | **terrain-aware movement + pathfinding** (height snap, collision, navmesh/A*) | planned |
+| M3 | **combat core**: spell casting, cast times, projectiles, damage types, status effects | planned |
+| M4 | entities & AI: minions, waves, spawners, aggro, leash | planned |
+| M5 | **Lua scripting** runtime (`spawn`, `on_tick`, `on_cast`) + fixed-tick sim | planned |
+| M6 | **co-op networking**: host-authoritative UDP, snapshots, asset agreement | planned |
+| M7 | mode framework: waves, objectives, **modifiers** (Doom Bots), **augments** (Star Guardian / Odyssey) | planned |
+| M8 | **recreate the co-op modes**: Star Guardian → Odyssey → Doom Bots | goal |
+
+Definitions of done and per-milestone prerequisites: see [Roadmap](#roadmap).
 
 Working today, verified against a live install:
 
