@@ -14,7 +14,7 @@ namespace lolview::net {
 //   WELCOME  server -> client : player id, tick, model table
 //   INTENT   client -> server : player, kind (move/attack/cast), slot, target
 //   SNAPSHOT server -> client : tick + one record per unit
-constexpr std::uint32_t kProtocolVersion = 1;
+constexpr std::uint32_t kProtocolVersion = 2;
 constexpr const char* kMagic = "LVN1";
 
 enum class MessageType : std::uint8_t {
@@ -40,6 +40,7 @@ struct Hello {
 
 struct Welcome {
     std::uint16_t player_id = 0;
+    std::uint16_t unit_id = 0;  // this player's own unit, so the client can skip it
     std::uint32_t tick = 0;
     std::vector<std::string> models;
 };

@@ -5,6 +5,7 @@
 -- cooldowns and area damage.
 
 local ATTACK_COOLDOWN = 0.8
+local ATTACK_RANGE = 600
 local ATTACK_DAMAGE = 45
 
 -- slot -> cooldown / damage / radius (Q W E R)
@@ -75,6 +76,15 @@ world.on_intent(function(player_id, kind, slot, target, x, z)
     end
     local unit = world.unit(target)
     if not unit or unit.hp <= 0 then return end
+
+    local attacker = world.player_unit(player_id)
+    if attacker then
+      local dx, dz = unit.x - attacker.x, unit.z - attacker.z
+      if dx * dx + dz * dz > ATTACK_RANGE * ATTACK_RANGE then
+        world.log(string.format("player %d attack rejected: out of range", player_id))
+        return
+      end
+    end
 
     last_attack[player_id] = now
     local remaining = world.damage(target, ATTACK_DAMAGE)

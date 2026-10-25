@@ -1596,6 +1596,7 @@ int main(int argc, char** argv) {
         lolview::net::UdpSocket net_socket;
         bool connected = false;
         std::uint16_t local_player = 0;
+        std::uint16_t own_unit = 0;
         std::vector<std::string> net_models;
         struct RemoteUnit {
             std::uint16_t id = 0;
@@ -1633,6 +1634,7 @@ int main(int argc, char** argv) {
                         if (const auto welcome = lolview::net::decode_welcome(datagram->data)) {
                             connected = true;
                             local_player = welcome->player_id;
+                            own_unit = welcome->unit_id;
                             net_models = welcome->models;
                         }
                     }
@@ -1728,6 +1730,10 @@ int main(int argc, char** argv) {
         int idle_variant = 0;
         int attack_variant = 0;
         float attack_lock = 0.0f;
+        // Attack commit: brief root plus facing, so attacks read as a stop-and-swing.
+        float attack_hold = 0.0f;
+        float attack_facing_x = 0.0f;
+        float attack_facing_z = 1.0f;
 
         camera.focus = champion_position;
         bool running = true;
@@ -1886,8 +1892,15 @@ int main(int argc, char** argv) {
                                 intent.kind = lolview::net::IntentKind::Attack;
                                 intent.target = net_target;
                                 net_socket.send_to(server_host, server_port,
-                                                   lolview::net::encode(intent));
-                            }
+                                                   lolview::net::encode(intent));                            // Commit: stop for a moment and face the target.
+                            attack_hold = 0.25f;
+                            has_move_target = false;
+                            for (const auto& remote : remote_units) {
+                                if (remote.id != net_target) continue;
+                                attack_facing_x = remote.x - champion_position.x;
+                                attack_facing_z = remote.z - champion_position.z;
+                                break;
+                            }                            }
                             break;
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
@@ -1972,7 +1985,7 @@ int main(int argc, char** argv) {
             // ---- camera yaw is stepped from key events (45 degrees) ----
             // ---- movement ----
             bool moving = false;
-            if (has_move_target) {
+            if (has_move_target && attack_hold <= 0.0f) {
                 lolview::Vec3 delta = move_target - champion_position;
                 delta.y = 0.0f;
                 const float distance = lolview::length(delta);
@@ -1992,6 +2005,15 @@ int main(int argc, char** argv) {
             // (Jinx: minigun / rlauncher); others fall back to plain names.
             cast_lock = std::max(0.0f, cast_lock - dt);
             attack_lock = std::max(0.0f, attack_lock - dt);
+            if (attack_hold > 0.0f) {
+                attack_hold = std::max(0.0f, attack_hold - dt);
+                const float facing_length =
+                    std::sqrt(attack_facing_x * attack_facing_x +
+                              attack_facing_z * attack_facing_z);
+                if (facing_length > 1e-3f) {
+                    champion_yaw = std::atan2(attack_facing_x, attack_facing_z);
+                }
+            }
             if (moving && !was_moving) ++walk_variant;
             was_moving = moving;
 
@@ -2234,9 +2256,10 @@ int main(int argc, char** argv) {
                 }
                 // Nearest enemy to the champion becomes the attack target.
                 net_target = 0xffff;
-                float best_distance = 1400.0f;
+                float best_distance = 600.0f;  // server enforces the same range
                 for (const auto& remote : remote_units) {
                     if (remote.team == 0 || remote.hp <= 0.0f) continue;
+                    if (remote.id == own_unit) continue;
                     const lolview::Vec3 remote_position{remote.x, remote.y, remote.z};
                     const float distance = lolview::length(remote_position - champion_position);
                     if (distance < best_distance) {
@@ -2254,6 +2277,14 @@ int main(int argc, char** argv) {
                     intent.target = net_target;
                     net_socket.send_to(server_host, server_port,
                                        lolview::net::encode(intent));
+                    attack_hold = 0.25f;
+                    has_move_target = false;
+                    for (const auto& remote : remote_units) {
+                        if (remote.id != net_target) continue;
+                        attack_facing_x = remote.x - champion_position.x;
+                        attack_facing_z = remote.z - champion_position.z;
+                        break;
+                    }
                 }
 
                 // Headless verification: cycle spell slots at the wave.
@@ -2344,14 +2375,24 @@ int main(int argc, char** argv) {
                                 lolview::translation(dummy_position + lolview::Vec3{0, 40, 0}),
                                 view, proj, w, h);
             for (const auto& remote : remote_units) {
-                const auto mesh_it = unit_models.find(remote.model);
-                const lolview::Skn* remote_mesh =
-                    mesh_it != unit_models.end() ? mesh_it->second : &dummy_mesh;
-                const auto texture_it = unit_textures.find(remote.model);
-                const lolview::TexImage* remote_texture =
-                    texture_it != unit_textures.end() ? texture_it->second : nullptr;
+                if (remote.id == own_unit) continue;  // drawn as the local champion
+                const lolview::Skn* remote_mesh = &dummy_mesh;
+                const lolview::TexImage* remote_texture = nullptr;
+                const std::vector<lolview::Mat4>* remote_bones = nullptr;
+                if (remote.model == "champion") {
+                    // Other players are champions too; without per-player model
+                    // streaming they share this client's champion art (animated).
+                    remote_mesh = &mesh;
+                    remote_texture = has_texture ? &texture : nullptr;
+                    remote_bones = &bones;
+                } else {
+                    const auto mesh_it = unit_models.find(remote.model);
+                    if (mesh_it != unit_models.end()) remote_mesh = mesh_it->second;
+                    const auto texture_it = unit_textures.find(remote.model);
+                    if (texture_it != unit_textures.end()) remote_texture = texture_it->second;
+                }
                 renderer.draw_scene(
-                    *remote_mesh, remote_texture, nullptr, nullptr,
+                    *remote_mesh, remote_texture, remote_bones, nullptr,
                     model_matrix(lolview::Vec3{remote.x, remote.y, remote.z}, remote.yaw), view,
                     proj, w, h);
             }
@@ -2477,6 +2518,7 @@ int main(int argc, char** argv) {
 
             // health bars for networked units
             for (const auto& remote : remote_units) {
+                if (remote.id == own_unit) continue;
                 if (remote.max_hp <= 0.0f) continue;
                 float remote_x = 0.0f, remote_y = 0.0f;
                 if (!project_to_screen(view, proj,
@@ -2511,7 +2553,7 @@ int main(int argc, char** argv) {
             // (selection highlight is drawn as a red wireframe in the 3D pass)
 
             // move-target marker
-            if (has_move_target) {
+            if (has_move_target && attack_hold <= 0.0f) {
                 float marker_x = 0.0f, marker_y = 0.0f;
                 if (project_to_screen(view, proj, move_target, w, h, marker_x, marker_y)) {
                     draw->AddCircle(ImVec2(marker_x, marker_y), 12.0f,

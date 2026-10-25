@@ -154,6 +154,7 @@ std::vector<std::uint8_t> encode(const Hello& message) {
 std::vector<std::uint8_t> encode(const Welcome& message) {
     Writer writer;
     writer.u16(message.player_id);
+    writer.u16(message.unit_id);
     writer.u32(message.tick);
     writer.u16(static_cast<std::uint16_t>(message.models.size()));
     for (const auto& model : message.models) writer.str(model);
@@ -220,6 +221,7 @@ std::optional<Welcome> decode_welcome(std::span<const std::uint8_t> bytes) {
     if (reader.remaining() == 0) return std::nullopt;
     Welcome welcome;
     welcome.player_id = reader.u16();
+    welcome.unit_id = reader.u16();
     welcome.tick = reader.u32();
     const std::uint16_t count = reader.u16();
     welcome.models.reserve(count);

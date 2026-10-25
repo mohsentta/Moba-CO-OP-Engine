@@ -51,6 +51,7 @@ struct World {
     float elapsed = 0.0f;
     int on_tick_ref = LUA_NOREF;
     int on_intent_ref = LUA_NOREF;
+    std::map<std::uint16_t, std::uint16_t> player_units;  // player id -> unit id
 
     Unit* find(std::uint16_t id) {
         for (auto& unit : units) {
@@ -178,6 +179,39 @@ int world_on_intent(lua_State* state) {
     return 0;
 }
 
+void push_unit(lua_State* state, const Unit& unit) {
+    lua_newtable(state);
+    lua_pushinteger(state, unit.id);
+    lua_setfield(state, -2, "id");
+    lua_pushnumber(state, unit.x);
+    lua_setfield(state, -2, "x");
+    lua_pushnumber(state, unit.z);
+    lua_setfield(state, -2, "z");
+    lua_pushnumber(state, unit.hp);
+    lua_setfield(state, -2, "hp");
+    lua_pushnumber(state, unit.max_hp);
+    lua_setfield(state, -2, "max_hp");
+    lua_pushinteger(state, unit.team);
+    lua_setfield(state, -2, "team");
+}
+
+int world_player_unit(lua_State* state) {
+    World& world = world_from(state);
+    const auto player = static_cast<std::uint16_t>(luaL_checkinteger(state, 1));
+    const auto it = world.player_units.find(player);
+    if (it == world.player_units.end()) {
+        lua_pushnil(state);
+        return 1;
+    }
+    const Unit* unit = world.find(it->second);
+    if (unit == nullptr) {
+        lua_pushnil(state);
+        return 1;
+    }
+    push_unit(state, *unit);
+    return 1;
+}
+
 int world_units(lua_State* state) {
     World& world = world_from(state);
     lua_newtable(state);
@@ -225,7 +259,7 @@ int world_on_tick(lua_State* state) {
 void register_world(lua_State* state, World& world) {
     static const luaL_Reg functions[] = {
         {"spawn", world_spawn}, {"set_hp", world_set_hp},       {"move", world_move},
-        {"unit", world_unit},   {"count", world_count}, {"units", world_units},         {"log", world_log},
+        {"unit", world_unit},   {"count", world_count}, {"units", world_units}, {"player_unit", world_player_unit},         {"log", world_log},
         {"on_tick", world_on_tick}, {"damage", world_damage},   {"remove", world_remove},
         {"time", world_time},       {"on_intent", world_on_intent}, {nullptr, nullptr},
     };
@@ -347,17 +381,20 @@ int main(int argc, char** argv) {
                 Unit unit;
                 unit.id = world.next_id++;
                 unit.model = "champion";
-                unit.x = 0.0f;
+                // Spread players along x so they can see each other.
+                unit.x = 260.0f * (static_cast<float>(client.player_id) - 1.5f) * 2.0f;
                 unit.z = 0.0f;
                 unit.hp = 620.0f;
                 unit.max_hp = 620.0f;
                 unit.team = 0;
                 world.units.push_back(unit);
                 client.unit_id = unit.id;
+                world.player_units[client.player_id] = unit.id;
                 clients.push_back(client);
 
                 lolview::net::Welcome welcome;
                 welcome.player_id = client.player_id;
+                welcome.unit_id = client.unit_id;
                 welcome.tick = static_cast<std::uint32_t>(world.tick);
                 welcome.models = kModels;
                 socket.send_to(client.host, client.port, lolview::net::encode(welcome));
