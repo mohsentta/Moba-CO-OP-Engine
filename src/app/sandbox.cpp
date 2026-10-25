@@ -1073,7 +1073,7 @@ int main(int argc, char** argv) {
                                     terrain_textures[material] = downscale_texture(
                                         lolview::decode_tex(full_archive->read_chunk(
                                             full_archive->entries()[*found])),
-                                        512);
+                                        1024);
                                     terrain_texture_paths[material] = path;
                                     ++resolved;
                                 } catch (const std::exception&) {
