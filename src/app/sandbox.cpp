@@ -117,6 +117,7 @@ struct MapPiece {
 };
 
 std::vector<lolview::CompressedAnimation> g_compressed_clips;
+std::map<std::string, std::vector<std::size_t>> g_compressed_by_key;
 
 struct TerrainGroup {
     std::string material;
@@ -779,6 +780,7 @@ int main(int argc, char** argv) {
                                 stem.c_str(), anim.joint_count, anim.frame_count,
                                 anim.duration);
                             compressed_clips.push_back(anim);
+                            g_compressed_by_key[key].push_back(compressed_clips.size() - 1);
                         } catch (const std::exception& nested) {
                             std::fprintf(stderr, "warning: %s.anm compressed parse failed: %s\n",
                                          stem.c_str(), nested.what());
@@ -1965,7 +1967,50 @@ int main(int argc, char** argv) {
             const float sampled =
                 clip != nullptr ? std::fmod(clip_time, std::max(clip->duration(), 0.01f))
                                 : 0.0f;
-            auto bones = lolview::compute_skin_matrices(skeleton, clip, sampled);
+
+            // Compressed clips (r3d2canm) carry the walk / attack / spell tracks
+            // the uncompressed set lacks, so they take precedence.
+            const auto compressed_for = [&](const std::string& action)
+                -> const lolview::CompressedAnimation* {
+                const auto lookup = [&](const std::string& base)
+                    -> const lolview::CompressedAnimation* {
+                    for (const std::string& key : {weapon_key + base, base}) {
+                        const auto it = g_compressed_by_key.find(key);
+                        if (it != g_compressed_by_key.end() && !it->second.empty()) {
+                            return &g_compressed_clips[it->second.front()];
+                        }
+                    }
+                    return nullptr;
+                };
+                if (const auto* exact = lookup(action)) return exact;
+                if (action.rfind("idle", 0) == 0) {
+                    for (int i = 1; i <= 3; ++i) {
+                        if (const auto* c = lookup("idle" + std::to_string(i))) return c;
+                    }
+                } else if (action.rfind("run", 0) == 0) {
+                    if (const auto* c = lookup("run")) return c;
+                    if (const auto* c = lookup("run2")) return c;
+                } else if (action.rfind("attack", 0) == 0) {
+                    for (int i = 1; i <= 6; ++i) {
+                        if (const auto* c = lookup("attack" + std::to_string(i))) return c;
+                    }
+                } else if (action.rfind("spell", 0) == 0) {
+                    for (int i = 1; i <= 4; ++i) {
+                        if (const auto* c = lookup("spell" + std::to_string(i))) return c;
+                    }
+                }
+                return nullptr;
+            };
+
+            std::vector<lolview::Mat4> bones;
+            if (const auto* compressed = compressed_for(current_clip)) {
+                const float compressed_time =
+                    std::fmod(clip_time, std::max(compressed->duration, 0.01f));
+                bones = lolview::compute_skin_matrices_from_keys(
+                    skeleton, lolview::evaluate_compressed(*compressed, compressed_time));
+            } else {
+                bones = lolview::compute_skin_matrices(skeleton, clip, sampled);
+            }
             if (args.mirror_x) {
                 // Conjugate by the X mirror so the mirrored mesh keeps its pose.
                 lolview::Mat4 flip = lolview::Mat4::identity();

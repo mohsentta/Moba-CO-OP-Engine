@@ -47,26 +47,33 @@ std::vector<Mat4> globals_from_locals(const Skl& skeleton,
 
 std::vector<Mat4> compute_skin_matrices(const Skl& skeleton, const Anm* animation,
                                         float time) {
+    std::map<std::uint32_t, TrsKey> keys;
+    if (animation != nullptr) {
+        for (const auto& [hash, track] : animation->evaluate(time)) {
+            TrsKey key;
+            key.translation = track.translation;
+            key.rotation = track.rotation;
+            key.scale = track.scale;
+            keys[hash] = key;
+        }
+    }
+    return compute_skin_matrices_from_keys(skeleton, keys);
+}
+
+std::vector<Mat4> compute_skin_matrices_from_keys(
+    const Skl& skeleton, const std::map<std::uint32_t, TrsKey>& keys) {
     const auto& joints = skeleton.joints();
     const std::size_t n = joints.size();
 
     std::vector<Mat4> locals(n);
-    if (animation == nullptr) {
-        for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto it = keys.find(joints[i].hash);
+        if (it != keys.end()) {
+            locals[i] = trs_matrix(it->second.translation, it->second.scale,
+                                   it->second.rotation);
+        } else {
             locals[i] = trs_matrix(joints[i].local_translation, joints[i].local_scale,
                                    joints[i].local_rotation);
-        }
-    } else {
-        const auto keys = animation->evaluate(time);
-        for (std::size_t i = 0; i < n; ++i) {
-            const auto it = keys.find(joints[i].hash);
-            if (it != keys.end()) {
-                locals[i] = trs_matrix(it->second.translation, it->second.scale,
-                                       it->second.rotation);
-            } else {
-                locals[i] = trs_matrix(joints[i].local_translation, joints[i].local_scale,
-                                       joints[i].local_rotation);
-            }
         }
     }
 

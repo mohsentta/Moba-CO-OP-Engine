@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <span>
 #include <vector>
+
+#include <lolview/pose.hpp>
 
 namespace lolview {
 
@@ -46,5 +49,11 @@ CompressedAnimation parse_compressed_animation(std::span<const std::uint8_t> byt
 
 // Decompresses the 48-bit quantised quaternion stored in three u16 values.
 void decompress_quat(const std::uint16_t value[3], float out_xyzw[4]);
+
+// Samples every joint at `time` (seconds), returning local transforms keyed by
+// joint name hash. Jump caches give four control points per joint and transform;
+// they are interpolated with Catmull-Rom (parametrised when the clip says so).
+std::map<std::uint32_t, TrsKey> evaluate_compressed(const CompressedAnimation& anim,
+                                                    float time);
 
 }  // namespace lolview
