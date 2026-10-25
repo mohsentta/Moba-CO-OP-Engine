@@ -733,28 +733,51 @@ int main(int argc, char** argv) {
         const bool has_texture = texture_bytes.has_value();
         if (has_texture) texture = lolview::decode_tex(*texture_bytes);
 
-        std::map<std::string, lolview::Anm> clips;
-        for (const char* name : {"Idle1", "Run", "Spell1", "Spell2", "Spell3", "Spell4",
-                                 "attack1"}) {
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::map<std::string, std::vector<lolview::Anm>> clips;
+        {
             std::string champion_lower = args.champion;
             std::transform(champion_lower.begin(), champion_lower.end(),
                            champion_lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            const auto bytes = resolve_first(
-                {base_dir + "Animations/" + name + ".anm",
-                 base_dir + "animations/" + champion_lower + "_" + lower + ".anm",
-                 base_dir + "animations/" + champion_lower + "_minigun_" + lower + ".anm",
-                 base_dir + "animations/" + champion_lower + "_" + lower + "1.anm"});
-            if (!bytes) continue;
-            try {
-                clips.emplace(name, lolview::Anm::parse(*bytes));
-            } catch (const std::exception&) {
+            const auto add_clip = [&](const std::string& key, const std::string& stem) {
+                const auto bytes = resolve_first({base_dir + "Animations/" + stem + ".anm",
+                                                  base_dir + "animations/" + stem + ".anm"});
+                if (!bytes) return;
+                try {
+                    clips[key].push_back(lolview::Anm::parse(*bytes));
+                } catch (const std::exception& error) {
+                    std::fprintf(stderr, "warning: %s.anm failed to parse: %s\n", stem.c_str(),
+                                 error.what());
+                }
+            };
+            // Both weapon families (Jinx: minigun / rlauncher) and the plain
+            // naming used by most champions.
+            for (const char* weapon : {"minigun", "rlauncher", ""}) {
+                const std::string w = weapon;
+                const std::string prefix =
+                    w.empty() ? champion_lower + "_" : champion_lower + "_" + w + "_";
+                const std::string key_prefix = w.empty() ? std::string() : w + "_";
+                for (int i = 1; i <= 3; ++i) {
+                    add_clip(key_prefix + "idle" + std::to_string(i), prefix + "idle" + std::to_string(i));
+                }
+                add_clip(key_prefix + "run", prefix + "run");
+                add_clip(key_prefix + "run2", prefix + "run2");
+                for (int i = 1; i <= 6; ++i) {
+                    add_clip(key_prefix + "attack" + std::to_string(i), prefix + "attack" + std::to_string(i));
+                }
+                for (int i = 1; i <= 4; ++i) {
+                    add_clip(key_prefix + "spell" + std::to_string(i), prefix + "spell" + std::to_string(i));
+                }
+            }
+            // Champion-agnostic fallbacks (Ahri style).
+            for (const char* name : {"Idle1", "Run", "Spell1", "Spell2", "Spell3", "Spell4",
+                                     "attack1"}) {
+                add_clip(name, std::string(name));
             }
         }
-        if (clips.empty()) {
+        std::size_t total_clips = 0;
+        for (const auto& [key, list] : clips) total_clips += list.size();
+        if (total_clips == 0) {
             std::fprintf(stderr,
                          "warning: no animation clips for %s; rendering the bind pose\n",
                          args.champion.c_str());
@@ -766,7 +789,9 @@ int main(int argc, char** argv) {
         std::printf("  skeleton: %zu joints, %zu influences\n", skeleton.joints().size(),
                     skeleton.influences().size());
         std::printf("  clips   : ");
-        for (const auto& [name, clip] : clips) std::printf("%s ", name.c_str());
+        for (const auto& [name, list] : clips) {
+            std::printf("%s(%zu) ", name.c_str(), list.size());
+        }
         std::printf("\n");
 
         // ---- VFX systems ----
@@ -1571,9 +1596,16 @@ int main(int argc, char** argv) {
         float cooldowns[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         const float cooldown_max[4] = {7.0f, 9.0f, 14.0f, 120.0f};
 
-        std::string current_clip = "Idle1";
+        std::string current_clip;
         float clip_time = 0.0f;
         float cast_lock = 0.0f;
+        std::string cast_action;
+        bool rocket_mode = false;
+        bool was_moving = false;
+        int walk_variant = 0;
+        int idle_variant = 0;
+        int attack_variant = 0;
+        float attack_lock = 0.0f;
 
         camera.focus = champion_position;
         bool running = true;
@@ -1594,12 +1626,9 @@ int main(int argc, char** argv) {
             direction = lolview::normalize(direction);
             champion_yaw = std::atan2(direction.x, direction.z);
 
-            const char* clip_names[4] = {"Spell1", "Spell2", "Spell3", "Spell4"};
-            if (clips.count(clip_names[slot])) {
-                current_clip = clip_names[slot];
-                clip_time = 0.0f;
-                cast_lock = clips.at(clip_names[slot]).duration();
-            }
+            cast_action = "spell" + std::to_string(slot + 1);
+            cast_lock = 0.05f;  // the clip's own duration replaces this on entry
+            clip_time = 0.0f;
 
             ActiveEffect effect;
             effect.kind = kind;
@@ -1688,7 +1717,13 @@ int main(int argc, char** argv) {
 
                     switch (event.key.scancode) {
                         case SDL_SCANCODE_Q:
-                            start_cast(lolview::EffectKind::Spell1, 0, aim);
+                            // Jinx-style weapons: Q swaps the animation set
+                            // between minigun and rocket launcher.
+                            if (clips.count("rlauncher_run") || clips.count("rlauncher_idle1")) {
+                                rocket_mode = !rocket_mode;
+                            } else {
+                                start_cast(lolview::EffectKind::Spell1, 0, aim);
+                            }
                             break;
                         case SDL_SCANCODE_W:
                             start_cast(lolview::EffectKind::Spell2, 1, aim);
@@ -1698,6 +1733,11 @@ int main(int argc, char** argv) {
                             break;
                         case SDL_SCANCODE_R:
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
+                            break;
+                        case SDL_SCANCODE_A:
+                            // Basic attack: cycles the weapon's attack clips.
+                            ++attack_variant;
+                            attack_lock = 0.05f;
                             break;
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
@@ -1798,22 +1838,53 @@ int main(int argc, char** argv) {
             }
 
             // ---- animation state ----
+            // Clip keys are "<weapon>_<action>" for champions with two weapons
+            // (Jinx: minigun / rlauncher); others fall back to plain names.
             cast_lock = std::max(0.0f, cast_lock - dt);
-            std::string desired = moving ? "Run" : "Idle1";
-            if (cast_lock > 0.0f && !current_clip.empty() &&
-                current_clip.rfind("Spell", 0) == 0) {
-                desired = current_clip;
-            }
-            if (!clips.empty()) {
-                if (!clips.count(desired)) desired = clips.begin()->first;
-                if (desired != current_clip) {
-                    current_clip = desired;
-                    clip_time = 0.0f;
+            attack_lock = std::max(0.0f, attack_lock - dt);
+            if (moving && !was_moving) ++walk_variant;
+            was_moving = moving;
+
+            const std::string weapon_key = rocket_mode ? "rlauncher_" : "minigun_";
+            const auto clip_for = [&](const std::string& action) -> const lolview::Anm* {
+                auto it = clips.find(weapon_key + action);
+                if (it == clips.end() || it->second.empty()) {
+                    it = clips.find(action);
                 }
-                clip_time += dt;
+                if (it == clips.end() || it->second.empty()) return nullptr;
+                const std::size_t choice =
+                    (action.rfind("run", 0) == 0 ? walk_variant
+                                                 : action.rfind("idle", 0) == 0 ? idle_variant
+                                                                                : 0) %
+                    it->second.size();
+                return &it->second[choice];
+            };
+
+            std::string desired;
+            if (cast_lock > 0.0f && !cast_action.empty()) {
+                desired = cast_action;
+            } else if (attack_lock > 0.0f) {
+                desired = "attack" + std::to_string(1 + (attack_variant % 6));
+            } else if (moving) {
+                // Two walk cycles per weapon, alternated each time one starts.
+                desired = (walk_variant % 2 == 0) ? "run" : "run2";
+            } else {
+                desired = "idle" + std::to_string(1 + (idle_variant % 3));
             }
-            const lolview::Anm* clip =
-                clips.empty() ? nullptr : &clips.at(current_clip);
+            if (!clips.empty() && desired != current_clip) {
+                current_clip = desired;
+                clip_time = 0.0f;
+                if (desired.rfind("idle", 0) == 0) ++idle_variant;
+                if (desired.rfind("spell", 0) == 0) {
+                    if (const auto* c = clip_for(desired)) cast_lock = c->duration();
+                }
+                if (desired.rfind("attack", 0) == 0) {
+                    if (const auto* c = clip_for(desired)) attack_lock = c->duration();
+                }
+            }
+            clip_time += dt;
+
+            const lolview::Anm* clip = clips.empty() ? nullptr : clip_for(current_clip);
             const float sampled =
                 clip != nullptr ? std::fmod(clip_time, std::max(clip->duration(), 0.01f))
                                 : 0.0f;
