@@ -47,6 +47,9 @@ public:
     // Procedural cube used for sandbox props (dummy targets). Not game data.
     static Skn make_cube(float half_extent);
 
+    // Horizontal quad on y = 0, used for the sandbox ground.
+    static Skn make_plane(float half_extent);
+
     std::uint16_t major_version() const noexcept { return major_; }
     std::uint16_t minor_version() const noexcept { return minor_; }
     const std::vector<SknMaterial>& materials() const noexcept { return materials_; }

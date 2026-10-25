@@ -65,6 +65,9 @@ public:
     void* gl_context() const noexcept;
     const std::string& gl_version() const noexcept;
 
+    // Uploads an image and returns a GL texture handle (used by the HUD).
+    unsigned upload_texture(const TexImage& image);
+
 private:
     struct Impl;
     Impl* impl_ = nullptr;

@@ -169,8 +169,10 @@ std::vector<Particle> simulate_vfx(const VfxSystem& system, float time, const Ve
         const float lifetime = std::max(0.05f, emitter.lifetime);
         const float rate = emitter.rate;
         const float size_px = std::clamp(
-            std::max(emitter.birth_scale.x, emitter.birth_scale.y) * pixels_per_unit, 4.0f,
-            400.0f);
+            std::max(emitter.birth_scale.x, emitter.birth_scale.y) * pixels_per_unit * 0.55f,
+            6.0f, 120.0f);
+        // Additive emitters stack quickly; tame them since blending is global.
+        const float alpha_scale = emitter.blend_mode == 4 ? 0.5f : 0.9f;
 
         if (emitter.single_particle || rate <= 0.0f) {
             if (time > lifetime) continue;
@@ -183,7 +185,7 @@ std::vector<Particle> simulate_vfx(const VfxSystem& system, float time, const Ve
             particle.r = color[0];
             particle.g = color[1];
             particle.b = color[2];
-            particle.a = color[3];
+            particle.a = color[3] * alpha_scale;
             particle.slot = static_cast<int>(emitter_index);
             particles.push_back(particle);
             continue;
@@ -210,7 +212,7 @@ std::vector<Particle> simulate_vfx(const VfxSystem& system, float time, const Ve
             particle.r = color[0];
             particle.g = color[1];
             particle.b = color[2];
-            particle.a = color[3];
+            particle.a = color[3] * alpha_scale;
             particle.slot = static_cast<int>(emitter_index);
             particles.push_back(particle);
         }

@@ -71,42 +71,35 @@ To use pre-installed libraries instead: `-DLOLVIEW_FETCH_DEPS=OFF`.
 
 ## Practice sandbox
 
-`lolview_sandbox` is the practice tool: a local window with the champion posed
-and animated, a free camera, an ability bar that casts effects, and a dummy
-target with health.
+`lolview_sandbox` is the practice tool, built to feel like the game: a locked
+isometric camera that follows the champion, right-click movement, cursor-aimed
+casts, and a League-style HUD with the champion's own ability icons.
 
 ```powershell
-.\build\lolview_sandbox.exe --game-dir "C:\Riot Games\League of Legends" --champion Ahri
+.\build\lolview_sandbox.exe --game-dir "C:\Riot Games\League of Legends" --champion Ahri `
+    --vfx-bin aa1b62a07d7b6785
 ```
-
-Real game VFX can drive the ability effects instead of the procedural ones; pass
-the VFX bin chunk hash (found with `--scan-find <particleName>` or the community
-hash dictionary):
-
-```powershell
-.\build\lolview_sandbox.exe --game-dir "..." --champion Ahri --vfx-bin aa1b62a07d7b6785
-```
-
-`--vfx-info <hash>` lists the systems and emitters in such a bin.
 
 | Input | Action |
 |---|---|
-| `W A S D` | move |
-| `SPACE` / `CTRL` | up / down |
-| right-drag | look |
-| mouse wheel | camera speed |
-| `Q` `W` `E` `R` | cast (plays the spell clip and spawns its effect) |
+| right click | move the champion (plays `Run`, returns to `Idle1`) |
+| `Q` `W` `E` `R` | cast at the cursor (spell clip + real VFX, cooldowns apply) |
+| mouse wheel | zoom |
+| `Y` | toggle camera lock |
+| `SPACE` | re-centre and lock |
 | `ESC` | quit |
 
-The ImGui panel shows the current pose time, clip selector, cast buttons, dummy
-health and framerate. Casting starts the matching `SpellN.anm` clip and returns
-to `Idle1` when it finishes; the projectile damages the dummy on arrival.
+The HUD draws the real ability icons, cooldown timers, champion health/mana,
+the target dummy's health bar and the champion's selection ring. Casting locks
+the spell clip until it finishes, then returns to movement/idle.
+
+Camera feel can be tuned without a rebuild: `--pitch 40 --distance 880`.
 
 Headless capture (used for regression screenshots):
 
 ```powershell
 .\build\lolview_sandbox.exe --game-dir "..." --champion Ahri `
-    --auto-cast q --capture shot.png --capture-after 0.45 --width 1280 --height 720
+    --auto-cast q --capture shot.png --capture-after 0.45 --width 1600 --height 900
 ```
 
 ## Usage

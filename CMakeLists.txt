@@ -105,7 +105,9 @@ add_library(lolview_core STATIC
     src/core/xxhash64.cpp
     src/formats/bcdec_impl.cpp
     src/formats/bin.cpp
+    src/formats/dds.cpp
     src/formats/decompress.cpp
+    src/formats/ground.cpp
     src/formats/anm.cpp
     src/formats/pose.cpp
     src/formats/skl.cpp
@@ -143,7 +145,8 @@ if(LOLVIEW_BUILD_VIEWER)
     add_library(lolview_render STATIC
         src/render/gl.cpp
         src/render/renderer.cpp
-        src/render/stb_write.cpp)
+        src/render/stb_write.cpp
+        src/render/texture_upload.cpp)
     target_include_directories(lolview_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(lolview_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
     target_link_libraries(lolview_render PUBLIC lolview_core PRIVATE ${LOLVIEW_RENDER_DEPS})

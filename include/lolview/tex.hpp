@@ -27,4 +27,8 @@ struct TexImage {
 // is 1,398,128 bytes, while the same texture as BC1 is exactly half that.
 TexImage decode_tex(std::span<const std::uint8_t> bytes);
 
+// Plain DDS files (ability icons ship as DDS rather than TEX). Handles the
+// BC1/BC2/BC3 variants; mip 0 only.
+TexImage decode_dds(std::span<const std::uint8_t> bytes);
+
 }  // namespace lolview
