@@ -779,6 +779,93 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        // ---- remote champions (other players) ----
+        // Each champion lives in its own archive; load one on demand so a client
+        // can show whoever the host says is in the session.
+        struct RemoteChampionAsset {
+            lolview::Skn mesh;
+            lolview::TexImage texture;
+            lolview::Skl skeleton;
+            std::map<std::string, lolview::CompressedAnimation> clips;
+            std::map<std::string, lolview::Anm> plain_clips;  // uncompressed ANM
+            bool has_texture = false;
+            bool ready = false;
+            bool attempted = false;
+        };
+        std::map<std::string, RemoteChampionAsset> remote_champions;
+        const auto load_remote_champion = [&](const std::string& name) -> RemoteChampionAsset* {
+            auto& asset = remote_champions[name];
+            if (asset.attempted) return asset.ready ? &asset : nullptr;
+            asset.attempted = true;
+
+            const std::string archive = name + ".wad";
+            const std::string dir = "ASSETS/Characters/" + name + "/Skins/Base/";
+            const auto resolve = [&](std::initializer_list<std::string> paths)
+                -> std::optional<std::vector<std::uint8_t>> {
+                for (const auto& path : paths) {
+                    if (auto bytes = resolve_chunk(args.game_dir, archive, path)) return bytes;
+                }
+                return std::nullopt;
+            };
+
+            const auto mesh_bytes = resolve({dir + name + "_Base.skn", dir + name + ".skn"});
+            const auto skeleton_bytes = resolve({dir + name + "_Base.skl", dir + name + ".skl"});
+            const auto texture_bytes =
+                resolve({dir + name + "_Base_TX_CM.tex", dir + name + "_TX_CM.tex"});
+            if (!mesh_bytes || !skeleton_bytes) {
+                std::printf("  model   : %s assets not found in %s\n", name.c_str(),
+                            archive.c_str());
+                return nullptr;
+            }
+            try {
+                asset.mesh = lolview::Skn::parse(*mesh_bytes);
+                if (args.mirror_x) asset.mesh.mirror_x();
+                asset.skeleton = lolview::Skl::parse(*skeleton_bytes);
+                if (texture_bytes) {
+                    asset.texture = lolview::decode_tex(*texture_bytes);
+                    asset.has_texture = true;
+                }
+            } catch (const std::exception& error) {
+                std::printf("  model   : %s failed to parse: %s\n", name.c_str(), error.what());
+                return nullptr;
+            }
+
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            // Clip naming varies: jinx_minigun_idle1, ahri_idle1, or Idle1/Run.
+            const auto capitalise = [](std::string text) {
+                if (!text.empty()) text[0] = static_cast<char>(std::toupper(text[0]));
+                return text;
+            };
+            for (const char* action : {"idle1", "idle2", "run", "run2"}) {
+                for (const std::string stem : {lower + "_minigun_" + action, lower + "_" + action,
+                                               std::string(action), capitalise(action)}) {
+                    const auto bytes =
+                        resolve({dir + "Animations/" + stem + ".anm",
+                                 dir + "animations/" + stem + ".anm"});
+                    if (!bytes) continue;
+                    if (lolview::is_compressed_animation(*bytes)) {
+                        try {
+                            asset.clips[action] = lolview::parse_compressed_animation(*bytes);
+                        } catch (const std::exception&) {
+                        }
+                    } else {
+                        // Older champions ship uncompressed ANM clips.
+                        try {
+                            asset.plain_clips[action] = lolview::Anm::parse(*bytes);
+                        } catch (const std::exception&) {
+                        }
+                    }
+                    break;
+                }
+            }
+            asset.ready = true;
+            std::printf("  model   : loaded %s from %s (%zu compressed, %zu plain clips)\n",
+                        name.c_str(), archive.c_str(), asset.clips.size(),
+                        asset.plain_clips.size());
+            return &asset;
+        };
         lolview::Skn mesh = lolview::Skn::parse(*mesh_bytes);
         if (args.mirror_x) mesh.mirror_x();
         const lolview::Skl skeleton = lolview::Skl::parse(*skeleton_bytes);
@@ -2428,9 +2515,16 @@ int main(int argc, char** argv) {
                         for (const auto& state : snapshot->units) {
                             RemoteUnit unit;
                             unit.id = state.id;
-                            unit.model = state.model < net_models.size()
-                                             ? net_models[state.model]
-                                             : std::string("cube");
+                            // The host roster is authoritative for who plays what.
+                            const auto champion_it = player_champions.find(state.id);
+                            if (champion_it != player_champions.end() &&
+                                !champion_it->second.empty()) {
+                                unit.model = champion_it->second;
+                            } else if (state.model < net_models.size()) {
+                                unit.model = net_models[state.model];
+                            } else {
+                                unit.model = "cube";
+                            }
                             // Server coordinates are world-relative; the client
                             // places them around its own spawn, like the scenario.
                             unit.x = spawn.x + state.x;
@@ -2589,7 +2683,38 @@ int main(int argc, char** argv) {
                 const lolview::TexImage* remote_texture = nullptr;
                 const std::vector<lolview::Mat4>* remote_bones = nullptr;
                 std::vector<lolview::Mat4> remote_bones_storage;
-                if (remote.model == "champion") {
+                if (remote.model != args.champion && remote.model != "champion" &&
+                    remote.model != "minion" && remote.model != "pet") {
+                    // Another player's champion: load that champion's own assets.
+                    if (auto* asset = load_remote_champion(remote.model)) {
+                        remote_mesh = &asset->mesh;
+                        remote_texture = asset->has_texture ? &asset->texture : nullptr;
+                        const char* action = remote.anim == 1 ? "run" : "idle1";
+                        auto clip_it = asset->clips.find(action);
+                        if (clip_it == asset->clips.end()) clip_it = asset->clips.find("idle1");
+                        float& phase = remote_phase[remote.id];
+                        if (clip_it != asset->clips.end()) {
+                            const float t = std::fmod(phase, std::max(clip_it->second.duration,
+                                                                      0.01f));
+                            remote_bones_storage = lolview::compute_skin_matrices_from_keys(
+                                asset->skeleton,
+                                lolview::evaluate_compressed(clip_it->second, t));
+                            remote_bones = &remote_bones_storage;
+                        } else {
+                            auto plain_it = asset->plain_clips.find(action);
+                            if (plain_it == asset->plain_clips.end()) {
+                                plain_it = asset->plain_clips.find("idle1");
+                            }
+                            if (plain_it != asset->plain_clips.end()) {
+                                const float t = std::fmod(
+                                    phase, std::max(plain_it->second.duration(), 0.01f));
+                                remote_bones_storage = lolview::compute_skin_matrices(
+                                    asset->skeleton, &plain_it->second, t);
+                                remote_bones = &remote_bones_storage;
+                            }
+                        }
+                    }
+                } else if (remote.model == "champion") {
                     // Other players are champions too; without per-player model
                     // streaming they share this client's champion art (animated).
                     remote_mesh = &mesh;
