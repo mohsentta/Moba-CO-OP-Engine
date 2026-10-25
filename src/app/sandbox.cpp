@@ -701,12 +701,25 @@ int main(int argc, char** argv) {
     try {
         g_right_handed = args.right_handed_view;
         // ---- assets from the user's install ----
-        const auto mesh_bytes =
-            resolve_chunk(args.game_dir, args.archive, skin_path(args.champion, ".skn"));
-        const auto skeleton_bytes =
-            resolve_chunk(args.game_dir, args.archive, skin_path(args.champion, ".skl"));
+        // Champions disagree on naming (Ahri_Base.skn vs jinx.skn, Idle1.anm vs
+        // jinx_minigun_idle1.anm), so several candidates are tried.
+        const auto resolve_first = [&](const std::vector<std::string>& paths)
+            -> std::optional<std::vector<std::uint8_t>> {
+            for (const auto& path : paths) {
+                if (auto bytes = resolve_chunk(args.game_dir, args.archive, path)) return bytes;
+            }
+            return std::nullopt;
+        };
+        const std::string base_dir =
+            "ASSETS/Characters/" + args.champion + "/Skins/Base/";
+        const auto mesh_bytes = resolve_first(
+            {base_dir + args.champion + "_Base.skn", base_dir + args.champion + ".skn"});
+        const auto skeleton_bytes = resolve_first(
+            {base_dir + args.champion + "_Base.skl", base_dir + args.champion + ".skl"});
         const auto texture_bytes =
-            resolve_chunk(args.game_dir, args.archive, skin_path(args.champion, "_TX_CM.tex"));
+            resolve_first({base_dir + args.champion + "_Base_TX_CM.tex",
+                           base_dir + args.champion + "_TX_CM.tex",
+                           base_dir + args.champion + ".tex"});
         if (!mesh_bytes || !skeleton_bytes) {
             std::fprintf(stderr, "error: could not resolve %s's mesh/skeleton in %s\n",
                          args.champion.c_str(), args.archive.c_str());
@@ -723,8 +736,18 @@ int main(int argc, char** argv) {
         std::map<std::string, lolview::Anm> clips;
         for (const char* name : {"Idle1", "Run", "Spell1", "Spell2", "Spell3", "Spell4",
                                  "attack1"}) {
-            const auto bytes =
-                resolve_chunk(args.game_dir, args.archive, clip_path(args.champion, name));
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::string champion_lower = args.champion;
+            std::transform(champion_lower.begin(), champion_lower.end(),
+                           champion_lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const auto bytes = resolve_first(
+                {base_dir + "Animations/" + name + ".anm",
+                 base_dir + "animations/" + champion_lower + "_" + lower + ".anm",
+                 base_dir + "animations/" + champion_lower + "_minigun_" + lower + ".anm",
+                 base_dir + "animations/" + champion_lower + "_" + lower + "1.anm"});
             if (!bytes) continue;
             try {
                 clips.emplace(name, lolview::Anm::parse(*bytes));
@@ -732,8 +755,9 @@ int main(int argc, char** argv) {
             }
         }
         if (clips.empty()) {
-            std::fprintf(stderr, "error: no animation clips could be loaded\n");
-            return 1;
+            std::fprintf(stderr,
+                         "warning: no animation clips for %s; rendering the bind pose\n",
+                         args.champion.c_str());
         }
 
         std::printf("lolview practice tool - %s\n", args.champion.c_str());
@@ -1780,15 +1804,20 @@ int main(int argc, char** argv) {
                 current_clip.rfind("Spell", 0) == 0) {
                 desired = current_clip;
             }
-            if (!clips.count(desired)) desired = clips.begin()->first;
-            if (desired != current_clip) {
-                current_clip = desired;
-                clip_time = 0.0f;
+            if (!clips.empty()) {
+                if (!clips.count(desired)) desired = clips.begin()->first;
+                if (desired != current_clip) {
+                    current_clip = desired;
+                    clip_time = 0.0f;
+                }
+                clip_time += dt;
             }
-            clip_time += dt;
-            const lolview::Anm& clip = clips.at(current_clip);
-            const float sampled = std::fmod(clip_time, std::max(clip.duration(), 0.01f));
-            auto bones = lolview::compute_skin_matrices(skeleton, &clip, sampled);
+            const lolview::Anm* clip =
+                clips.empty() ? nullptr : &clips.at(current_clip);
+            const float sampled =
+                clip != nullptr ? std::fmod(clip_time, std::max(clip->duration(), 0.01f))
+                                : 0.0f;
+            auto bones = lolview::compute_skin_matrices(skeleton, clip, sampled);
             if (args.mirror_x) {
                 // Conjugate by the X mirror so the mirrored mesh keeps its pose.
                 lolview::Mat4 flip = lolview::Mat4::identity();
