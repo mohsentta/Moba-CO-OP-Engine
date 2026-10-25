@@ -1943,15 +1943,28 @@ int main(int argc, char** argv) {
             } else {
                 desired = "idle" + std::to_string(1 + (idle_variant % 3));
             }
-            if (!clips.empty() && desired != current_clip) {
+            if (desired != current_clip) {
                 current_clip = desired;
                 clip_time = 0.0f;
                 if (desired.rfind("idle", 0) == 0) ++idle_variant;
-                if (desired.rfind("spell", 0) == 0) {
-                    if (const auto* c = clip_for(desired)) cast_lock = c->duration();
-                }
-                if (desired.rfind("attack", 0) == 0) {
-                    if (const auto* c = clip_for(desired)) attack_lock = c->duration();
+
+                // Spell and attack actions must stay locked for the clip length,
+                // which lives in the compressed table for most champions.
+                if (desired.rfind("spell", 0) == 0 || desired.rfind("attack", 0) == 0) {
+                    float duration = 0.5f;
+                    for (const std::string& key : {weapon_key + desired, desired}) {
+                        const auto it = g_compressed_by_key.find(key);
+                        if (it != g_compressed_by_key.end() && !it->second.empty()) {
+                            duration = g_compressed_clips[it->second.front()].duration;
+                            break;
+                        }
+                    }
+                    if (const auto* c = clip_for(desired)) duration = c->duration();
+                    if (desired.rfind("spell", 0) == 0) {
+                        cast_lock = duration;
+                    } else {
+                        attack_lock = duration;
+                    }
                 }
             }
             clip_time += dt;
