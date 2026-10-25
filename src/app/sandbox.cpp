@@ -180,6 +180,8 @@ struct Args {
     // Legacy data-level mirror, kept for comparison only.
     bool mirror_x = false;
     std::string scenario_path = "scenario.txt";
+    float pick_x = -1.0f;
+    float pick_y = -1.0f;
     int select_piece = -1;
     std::string scene_path;
     std::string capture;
@@ -641,6 +643,12 @@ int main(int argc, char** argv) {
             args.right_handed_view = false;
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
+        } else if (arg == "--pick-test") {
+            std::string value;
+            if (!next(value)) return 2;
+            args.pick_x = static_cast<float>(std::atof(value.c_str()));
+            if (!next(value)) return 2;
+            args.pick_y = static_cast<float>(std::atof(value.c_str()));
         } else if (arg == "--select") {
             std::string value;
             if (!next(value)) return 2;
@@ -1378,8 +1386,7 @@ int main(int argc, char** argv) {
         };
         if (!map_pieces.empty()) history.push_back(capture_snapshot());
 
-        load_scene();
-        if (args.save_scene_on_start) {
+        load_scene();        if (args.save_scene_on_start) {
             for (auto& piece : map_pieces) {
                 piece.initial_position = piece.position;
                 piece.initial_yaw = piece.yaw;
@@ -1417,6 +1424,27 @@ int main(int argc, char** argv) {
                 lolview::normalize(camera.focus - free_camera.position);
             free_camera.yaw = std::atan2(direction.x, direction.z);
             free_camera.pitch = std::asin(std::clamp(direction.y, -1.0f, 1.0f));
+        }
+
+        // Headless picking probe (used to verify selection without a mouse).
+        if (args.pick_x >= 0.0f && args.pick_y >= 0.0f) {
+            lolview::Vec3 origin, direction;
+            if (free_mode) {
+                ray_from_basis(free_camera.position, free_camera.forward(), args.pick_x,
+                               args.pick_y, args.width, args.height, origin, direction);
+            } else {
+                camera_ray(camera, args.pick_x, args.pick_y, args.width, args.height, origin,
+                           direction);
+            }
+            const auto hits = pick_pieces(map_pieces, origin, direction);
+            std::printf("pick (%.0f, %.0f): %zu hit(s)\n", args.pick_x, args.pick_y,
+                        hits.size());
+            for (std::size_t i = 0; i < hits.size() && i < 5; ++i) {
+                std::printf("  [%zu] t=%.1f piece=%d %s\n", i, hits[i].first, hits[i].second,
+                            map_pieces[static_cast<std::size_t>(hits[i].second)]
+                                .material.c_str());
+            }
+            return 0;
         }
 
         lolview::Vec3 dummy_position = spawn + lolview::Vec3{0.0f, 0.0f, 700.0f};
