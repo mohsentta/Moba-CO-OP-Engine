@@ -102,6 +102,7 @@ message(STATUS "lolview: zstd -> ${LOLVIEW_ZSTD_TARGET}, zlib -> ${LOLVIEW_ZLIB_
 # ---------------------------------------------------------------------------
 add_library(lolview_core STATIC
     src/net/net.cpp
+    src/core/walkable.cpp
     src/core/asset_source.cpp
     src/core/xxhash64.cpp
     src/formats/bcdec_impl.cpp

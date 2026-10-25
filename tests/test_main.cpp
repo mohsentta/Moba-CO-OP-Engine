@@ -9,6 +9,7 @@
 #include <lolview/decompress.hpp>
 #include <lolview/math.hpp>
 #include <lolview/net.hpp>
+#include <lolview/walkable.hpp>
 #include <lolview/skn.hpp>
 #include <lolview/wad.hpp>
 #include <lolview/vfx.hpp>
@@ -432,6 +433,34 @@ void test_asset_source_guardrail() {
     fs::remove_all(dir, ec);
 }
 
+void test_walk_area() {
+    using namespace lolview;
+
+    // Square polygon, 100 units around the origin.
+    WalkArea area;
+    area.parse("path 1\npoint -100 -100\npoint 100 -100\npoint 100 100\npoint -100 100\nend\n");
+    CHECK_EQ(area.polygons.size(), std::size_t{1});
+    CHECK(area.contains(0.0f, 0.0f));
+    CHECK(area.contains(90.0f, -90.0f));
+    CHECK(!area.contains(150.0f, 0.0f));
+    CHECK(!area.contains(0.0f, -150.0f));
+
+    // An empty area imposes no restriction.
+    WalkArea unrestricted;
+    CHECK(unrestricted.contains(12345.0f, -9999.0f));
+
+    // A second polygon extends the walkable set.
+    area.parse("path 2\npoint 200 200\npoint 400 200\npoint 400 400\npoint 200 400\nend\n");
+    CHECK_EQ(area.polygons.size(), std::size_t{2});
+    CHECK(area.contains(300.0f, 300.0f));
+    CHECK(!area.contains(150.0f, 150.0f));
+
+    // Malformed blocks are skipped, not fatal.
+    WalkArea broken;
+    broken.parse("path 3\npoint 0 0\npoint 10 10\nend\n");
+    CHECK_EQ(broken.polygons.size(), std::size_t{0});
+}
+
 void test_net() {
     using namespace lolview::net;
 
@@ -543,6 +572,7 @@ int main() {
         test_cube();
         test_bin_hash();
         test_asset_source_guardrail();
+        test_walk_area();
         test_net();
     } catch (const std::exception& e) {
         std::printf("FAIL uncaught exception: %s\n", e.what());

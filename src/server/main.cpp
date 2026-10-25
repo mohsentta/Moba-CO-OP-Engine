@@ -5,6 +5,7 @@
 // shell that keeps the script away from sockets and the player away from state.
 
 #include <lolview/net.hpp>
+#include <lolview/walkable.hpp>
 
 extern "C" {
 #include <lua.h>
@@ -18,6 +19,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <fstream>
 #include <map>
 #include <thread>
 #include <string>
@@ -52,6 +54,8 @@ struct World {
     int on_tick_ref = LUA_NOREF;
     int on_intent_ref = LUA_NOREF;
     std::map<std::uint16_t, std::uint16_t> player_units;  // player id -> unit id
+    // Walkable area from the editor (scripts/paths.txt). Empty = unrestricted.
+    lolview::WalkArea area;
 
     Unit* find(std::uint16_t id) {
         for (auto& unit : units) {
@@ -324,6 +328,7 @@ int main(int argc, char** argv) {
     std::string script = "server/main.lua";
     float duration = 5.0f;
     std::uint16_t port = 27015;
+    std::string paths_file = "scripts/paths.txt";
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--script" && i + 1 < argc) {
@@ -332,6 +337,8 @@ int main(int argc, char** argv) {
             duration = static_cast<float>(std::atof(argv[++i]));
         } else if (argument == "--port" && i + 1 < argc) {
             port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
+        } else if (argument == "--paths" && i + 1 < argc) {
+            paths_file = argv[++i];
         } else {
             std::fprintf(stderr,
                          "usage: lolview_server [--script <file>] [--duration <s>] [--port <n>]\n");
@@ -348,6 +355,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: %s: %s\n", script.c_str(), lua_tostring(state, -1));
         lua_close(state);
         return 1;
+    }
+
+    if (!paths_file.empty() && world.area.load(paths_file)) {
+        std::printf("server: %zu walkable polygon(s) from %s\n", world.area.polygons.size(),
+                    paths_file.c_str());
     }
 
     lolview::net::UdpSocket socket;
@@ -406,6 +418,11 @@ int main(int argc, char** argv) {
                     if (client.player_id != intent->player_id) continue;
                     if (Unit* unit = world.find(client.unit_id)) {
                         if (intent->kind == lolview::net::IntentKind::Move) {
+                            if (!world.area.contains(intent->x, intent->z)) {
+                                std::printf("server: player %u move rejected: outside the walkable area\n",
+                                            intent->player_id);
+                                break;
+                            }
                             unit->x = intent->x;
                             unit->z = intent->z;
                             std::printf("server: player %u move -> (%.0f, %.0f)\n",

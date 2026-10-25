@@ -1,0 +1,6 @@
+path 1
+point -400 -400
+point 400 -400
+point 400 400
+point -400 400
+end

@@ -189,6 +189,8 @@ struct Args {
     std::string join;
     float auto_attack = 0.0f;
     float auto_spell = 0.0f;
+    bool path_test = false;
+    std::string auto_move;
     std::string force_anim;
     float pick_x = -1.0f;
     float pick_y = -1.0f;
@@ -685,6 +687,10 @@ int main(int argc, char** argv) {
             std::string value;
             if (!next(value)) return 2;
             args.auto_spell = static_cast<float>(std::atof(value.c_str()));
+        } else if (arg == "--path-test") {
+            args.path_test = true;
+        } else if (arg == "--auto-move") {
+            if (!next(args.auto_move)) return 2;
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
         } else if (arg == "--pick-test") {
@@ -1517,6 +1523,12 @@ int main(int argc, char** argv) {
         float free_speed = 1200.0f;  // wheel adjusts this in editor mode
         bool free_mode = false;
         bool editor_mode = false;  // F2: free-fly camera + editor window
+        // F3: walkable-polygon editor. The polygon is saved so the game host can
+        // reject movement outside it.
+        bool path_edit = false;
+        std::vector<lolview::Vec3> walk_path;
+        bool walk_path_closed = false;
+        std::string walk_path_file = "scripts/paths.txt";
 
         if (args.start_free_camera) {
             free_mode = true;
@@ -1612,6 +1624,15 @@ int main(int argc, char** argv) {
         std::string server_host;
         std::uint16_t server_port = 27015;
 
+        if (args.path_test) {
+            // Seed a triangle so the overlay can be inspected without clicking.
+            walk_path = {spawn + lolview::Vec3{-320.0f, 0.0f, -260.0f},
+                         spawn + lolview::Vec3{320.0f, 0.0f, -260.0f},
+                         spawn + lolview::Vec3{0.0f, 0.0f, 320.0f}};
+            walk_path_closed = true;
+            path_edit = true;
+        }
+
         if (!args.join.empty()) {
             server_host = args.join;
             const auto colon = server_host.find(':');
@@ -1643,6 +1664,20 @@ int main(int argc, char** argv) {
                 std::printf("  net     : %s (%s:%u, player %u)\n",
                             connected ? "joined" : "no server", server_host.c_str(),
                             server_port, local_player);
+                if (connected && !args.auto_move.empty()) {
+                    const auto comma = args.auto_move.find(',');
+                    if (comma != std::string::npos) {
+                        lolview::net::Intent intent;
+                        intent.player_id = local_player;
+                        intent.kind = lolview::net::IntentKind::Move;
+                        intent.x = static_cast<float>(std::atof(args.auto_move.substr(0, comma).c_str()));
+                        intent.z = static_cast<float>(std::atof(args.auto_move.substr(comma + 1).c_str()));
+                        net_socket.send_to(server_host, server_port,
+                                           lolview::net::encode(intent));
+                        std::printf("  net     : auto-move to (%.0f, %.0f)\n", intent.x,
+                                    intent.z);
+                    }
+                }
             }
         }
 
@@ -1883,7 +1918,8 @@ int main(int argc, char** argv) {
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
                         case SDL_SCANCODE_A:
-                            // Basic attack: local animation plus a server intent.
+                            // Basic attack only when something is actually in range.
+                            if (net_target == 0xffff) break;
                             ++attack_variant;
                             attack_lock = 0.05f;
                             if (connected && net_target != 0xffff) {
@@ -1917,6 +1953,56 @@ int main(int argc, char** argv) {
                         case SDL_SCANCODE_Z:
                             if ((SDL_GetModState() & SDL_KMOD_CTRL) != 0) undo_last();
                             break;
+                        case SDL_SCANCODE_BACKSPACE:
+                            if (path_edit && !walk_path.empty()) {
+                                walk_path.pop_back();
+                                walk_path_closed = false;
+                                std::printf("  path    : %zu points\n", walk_path.size());
+                            }
+                            break;
+                        case SDL_SCANCODE_RETURN:
+                            if (path_edit && walk_path.size() >= 3) {
+                                walk_path_closed = true;
+                                std::printf("  path    : closed with %zu points\n",
+                                            walk_path.size());
+                            }
+                            break;
+                        case SDL_SCANCODE_F5: {
+                            if (!walk_path.empty()) {
+                                std::ofstream out(walk_path_file, std::ios::trunc);
+                                if (out) {
+                                    out << "path 1\n";
+                                    for (const auto& point : walk_path) {
+                                        // Saved in spawn-relative space: that is
+                                        // the space intents and the host share.
+                                        out << "point " << (point.x - spawn.x) << " "
+                                            << (point.z - spawn.z) << "\n";
+                                    }
+                                    out << "end\n";
+                                    std::printf("  path    : saved %zu points to %s\n",
+                                                walk_path.size(), walk_path_file.c_str());
+                                } else {
+                                    std::printf("  path    : cannot write %s\n",
+                                                walk_path_file.c_str());
+                                }
+                            }
+                            break;
+                        }
+                        case SDL_SCANCODE_F3: {
+                            path_edit = !path_edit;
+                            if (path_edit) {
+                                editor_mode = true;
+                                free_mode = true;
+                                free_camera.position = camera.eye();
+                                const lolview::Vec3 direction =
+                                    lolview::normalize(camera.focus - camera.eye());
+                                free_camera.yaw = std::atan2(direction.x, direction.z);
+                                free_camera.pitch = std::asin(direction.y);
+                            }
+                            std::printf("  path    : %s (%zu points)\n",
+                                        path_edit ? "editing" : "closed", walk_path.size());
+                            break;
+                        }
                         case SDL_SCANCODE_F2: {
                             // F2 opens the editor: free-fly camera plus the
                             // editor window. Pressing it again returns to play.
@@ -2364,6 +2450,9 @@ int main(int argc, char** argv) {
                                     nullptr, lolview::translation(pet_position), view, proj, w, h);
             }
             for (const auto& unit : units) {
+                // While connected the host owns the world; local scenario units
+                // would duplicate the replicated ones and confuse targeting.
+                if (connected) break;
                 if (!unit.alive || unit.mesh == nullptr) continue;
                 const auto texture_it = unit_textures.find(unit.model);
                 const lolview::TexImage* unit_texture =
@@ -2406,6 +2495,28 @@ int main(int argc, char** argv) {
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
+            // Walkable-path editing: left click places a vertex on the ground.
+            if (path_edit && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                !ImGui::GetIO().WantCaptureMouse && !walk_path_closed) {
+                float mouse_x = 0.0f, mouse_y = 0.0f;
+                SDL_GetMouseState(&mouse_x, &mouse_y);
+                lolview::Vec3 origin, direction;
+                if (free_mode) {
+                    ray_from_basis(free_camera.position, free_camera.forward(), mouse_x, mouse_y,
+                                   w, h, origin, direction);
+                } else {
+                    camera_ray(camera, mouse_x, mouse_y, w, h, origin, direction);
+                }
+                if (std::fabs(direction.y) > 1e-5f) {
+                    const float t = -origin.y / direction.y;
+                    if (t >= 0.0f) {
+                        walk_path.push_back(origin + direction * t);
+                        std::printf("  path    : vertex %zu at (%.0f, %.0f)\n",
+                                    walk_path.size(), walk_path.back().x, walk_path.back().z);
+                    }
+                }
+            }
+
             // Click in the world selects a piece, but only while editing.
             if (editor_mode && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
                 !ImGui::GetIO().WantCaptureMouse && !map_pieces.empty()) {
@@ -2439,6 +2550,30 @@ int main(int argc, char** argv) {
             }
 
             ImDrawList* draw = ImGui::GetBackgroundDrawList();
+            // Walkable polygon overlay (F3 editor).
+            if (path_edit && !walk_path.empty()) {
+                for (std::size_t i = 0; i + 1 < walk_path.size(); ++i) {
+                    float ax = 0, ay = 0, bx = 0, by = 0;
+                    if (!project_to_screen(view, proj, walk_path[i], w, h, ax, ay)) continue;
+                    if (!project_to_screen(view, proj, walk_path[i + 1], w, h, bx, by)) continue;
+                    draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), IM_COL32(90, 220, 255, 255),
+                                  3.0f);
+                }
+                if (walk_path_closed && walk_path.size() >= 3) {
+                    float ax = 0, ay = 0, bx = 0, by = 0;
+                    if (project_to_screen(view, proj, walk_path.back(), w, h, ax, ay) &&
+                        project_to_screen(view, proj, walk_path.front(), w, h, bx, by)) {
+                        draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), IM_COL32(90, 220, 255, 255),
+                                      3.0f);
+                    }
+                }
+                for (const auto& point : walk_path) {
+                    float sx = 0, sy = 0;
+                    if (!project_to_screen(view, proj, point, w, h, sx, sy)) continue;
+                    draw->AddCircleFilled(ImVec2(sx, sy), 5.0f, IM_COL32(255, 255, 255, 235));
+                }
+            }
+
 
             // champion health / mana
             const float bar_width = 320.0f;
