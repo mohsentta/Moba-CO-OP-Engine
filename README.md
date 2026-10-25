@@ -178,6 +178,93 @@ scripts/           maintenance helpers (not part of the build)
 `reference/` and `docs/research/` are source material written against the
 formats; they contain no game data.
 
+## Roadmap
+
+**End goal:** a co-op engine that can rebuild *old* League of Legends co-op modes
+— Doom Bots, Star Guardian Invasion, Odyssey Extraction — from data and scripts,
+on a locally installed client's assets, in a multiplayer session.
+
+Everything is ordered by dependency. Each milestone lists what must be true
+before it can start, and what "done" means.
+
+### M0 — Asset sandbox *(done)*
+Champion mesh/skeleton/animation, textures, VFX, the whole Rift with per-material
+textures and alpha, jungle pets and minions, map editor with saved transforms,
+scene-driven unit spawning.
+
+### M1 — Complete animation coverage *(next)*
+**Needs:** M0. **Done when:** every clip a champion ships plays.
+- Parse the compressed animation container (`r3d2canm`, versions 1–3): header,
+  per-joint frame records, jump-cache evaluation.
+- Feed decoded tracks into the existing pose pipeline, so nothing downstream
+  changes.
+- Unlocks Jinx's two walk cycles, all attacks per weapon, and spells.
+
+### M2 — Terrain-aware movement
+**Needs:** M1. **Done when:** units follow the ground and cannot walk through walls.
+- Sample the map's height (mapgeo triangles) for ground snapping.
+- Collision against level geometry; simple slide response.
+- Pathfinding: navmesh (or a coarse grid baked from the same map data) plus
+  A*; straight-line smoothing.
+- Agent movement: arrive / face / turn-rate, so units stop and turn believably.
+
+### M3 — Combat core
+**Needs:** M1, M2. **Done when:** two units can fight and one dies.
+- Data-driven spells: cast time, cooldown, cost, range, targeting shape
+  (line / circle / cone / self).
+- Projectiles with travel, collision and on-hit callbacks.
+- Damage packets: raw/physical/magic, armour/MR, shields, death.
+- Status effects: stun, slow, knockback — the minimum for boss abilities.
+- Auto-attacks: wind-up, missile, attack-move.
+
+### M4 — Entities and AI
+**Needs:** M2, M3. **Done when:** minion waves march, fight and retreat.
+- Minion/camp/turret entity types, spawners, lane waypoints.
+- Behaviour layer: acquire target, chase, attack, leash, retreat.
+- Team logic, aggro rules, wave timing.
+
+### M5 — Scripting runtime
+**Needs:** M3. **Done when:** a mode's rules live entirely in a script.
+- Embedded Lua with a small world API: `spawn`, `on_tick`, `on_cast`,
+  `damage`, `set_hp`, timers, waves.
+- Fixed-tick simulation (e.g. 30 Hz) so scripts are deterministic and netcode
+  has a stable clock.
+- Hot reload for iteration.
+
+### M6 — Co-op networking
+**Needs:** M5. **Done when:** two clients share one session.
+- Host-authoritative UDP: `HELLO` / `WELCOME` / intent / snapshot.
+- Clients send intents (move, cast), host simulates, ~20 Hz snapshots,
+  client interpolation; reconnect and late join.
+- Asset agreement check: peers must load matching content, with a clear error.
+- Lobby and player slots (4–5 players, as the modes expect).
+
+### M7 — Mode framework
+**Needs:** M5, M6. **Done when:** a new mode is a script + data, not C++.
+- Mode contract: waves, spawn tables, objectives, win/lose, modifiers.
+- Modifier system for enemies (extra health, custom abilities, on-death
+  effects) — the backbone of Doom Bots.
+- Augment/upgrade system with per-player choices — needed for Star Guardian
+  and Odyssey.
+- Shared HUD for objectives and wave state.
+
+### M8 — Recreate the modes
+**Needs:** M7. One script package per mode, in this order of difficulty:
+1. **Star Guardian Invasion** — wave defence, augments, objective phases.
+2. **Odyssey Extraction** — 2-player escalation, augments, boss stages.
+3. **Doom Bots** — modifier-heavy enemy scripting, custom bot abilities.
+
+### Beyond M8
+- **Tooling:** timeline/ability editor, wave editor, replay of recorded sessions.
+- **Presentation:** audio (BKHD/banks are unparsed), damage numbers, better HUD.
+- **Performance:** instancing for map pieces, frustum culling, fewer draw calls.
+- **Robustness:** fuzz the format parsers; tolerate missing assets gracefully.
+
+### Principles
+- Engine stays generic; game content arrives through providers and scripts.
+- No game assets are distributed — everything is read from the user's install.
+- Any format we implement gets a reference note in `docs/FORMATS.md`.
+
 ## License
 
 Source code: MIT (see `LICENSE`). Game assets are not covered by that license
