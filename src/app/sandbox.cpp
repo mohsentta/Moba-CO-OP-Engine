@@ -1399,7 +1399,11 @@ int main(int argc, char** argv) {
                     // Right-drag looks around in free-fly mode.
                     const SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
                     if ((buttons & SDL_BUTTON_RMASK) != 0) {
-                        free_camera.yaw -= static_cast<float>(event.motion.xrel) * 0.0025f;
+                        // In a right-handed basis a positive mouse delta turns the
+                        // view right, i.e. yaw grows.
+                        const float sign = g_right_handed ? 1.0f : -1.0f;
+                        free_camera.yaw +=
+                            sign * static_cast<float>(event.motion.xrel) * 0.0025f;
                         free_camera.pitch = std::clamp(
                             free_camera.pitch -
                                 static_cast<float>(event.motion.yrel) * 0.0025f,
@@ -1502,8 +1506,10 @@ int main(int argc, char** argv) {
                 const bool* keys = SDL_GetKeyboardState(nullptr);
                 const float speed = free_speed * (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 1.0f);
                 const lolview::Vec3 forward = free_camera.forward();
-                const lolview::Vec3 right = lolview::normalize(
-                    lolview::cross(forward, lolview::Vec3{0.0f, 1.0f, 0.0f}));
+                const lolview::Vec3 world_up{0.0f, 1.0f, 0.0f};
+                const lolview::Vec3 right =
+                    g_right_handed ? lolview::normalize(lolview::cross(world_up, forward))
+                                   : lolview::normalize(lolview::cross(forward, world_up));
                 lolview::Vec3 delta{0.0f, 0.0f, 0.0f};
                 if (keys[SDL_SCANCODE_W]) delta = delta + forward;
                 if (keys[SDL_SCANCODE_S]) delta = delta - forward;
