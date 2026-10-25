@@ -45,6 +45,8 @@ struct Unit {
     int team = 0;
     bool dead = false;
     lolview::net::AnimState anim = lolview::net::AnimState::Idle;
+    lolview::net::AnimState action_state = lolview::net::AnimState::Idle;
+    float action_timer = 0.0f;  // seconds of attack/cast left to play
     float prev_x = 0.0f;
     float prev_z = 0.0f;
     std::vector<std::pair<float, float>> path;  // remaining waypoints
@@ -505,7 +507,21 @@ int main(int argc, char** argv) {
                             std::printf("server: player %u move -> (%.0f, %.0f)\n",
                                         intent->player_id, intent->x, intent->z);
                         } else {
-                            // Attacks and casts are resolved by the game mode.
+                            // Attacks and casts are resolved by the game mode, and
+                            // put the unit into an action state the clients can see.
+                            if (intent->kind == lolview::net::IntentKind::Attack) {
+                                unit->action_state = lolview::net::AnimState::Attack;
+                                unit->action_timer = 0.9f;
+                                if (const Unit* victim = world.find(intent->target)) {
+                                    unit->yaw = std::atan2(victim->x - unit->x,
+                                                           victim->z - unit->z);
+                                }
+                            } else {
+                                unit->action_state = lolview::net::AnimState::Cast;
+                                unit->action_timer = 1.2f;
+                                unit->yaw = std::atan2(intent->x - unit->x,
+                                                       intent->z - unit->z);
+                            }
                             dispatch_intent(state, world, intent->player_id, intent->kind,
                                             intent->slot, intent->target, intent->x, intent->z);
                         }
@@ -562,10 +578,19 @@ int main(int argc, char** argv) {
                 unit.anim = lolview::net::AnimState::Dead;
                 continue;
             }
+            if (unit.action_timer > 0.0f) {
+                unit.action_timer -= kTickSeconds;
+                unit.anim = unit.action_state;
+                continue;
+            }
             const float dx = unit.x - unit.prev_x;
             const float dz = unit.z - unit.prev_z;
-            unit.anim = (dx * dx + dz * dz) > 0.25f ? lolview::net::AnimState::Run
-                                                    : lolview::net::AnimState::Idle;
+            if ((dx * dx + dz * dz) > 0.25f) {
+                unit.anim = lolview::net::AnimState::Run;
+                unit.yaw = std::atan2(dx, dz);
+            } else {
+                unit.anim = lolview::net::AnimState::Idle;
+            }
         }
         ++world.tick;
         world.elapsed += kTickSeconds;
@@ -590,6 +615,7 @@ int main(int argc, char** argv) {
                 state_on_wire.max_hp = unit.max_hp;
                 state_on_wire.team = static_cast<std::uint8_t>(unit.team);
                 state_on_wire.anim = unit.anim;
+                state_on_wire.yaw = unit.yaw;
                 snapshot.units.push_back(state_on_wire);
             }
             const auto packet = lolview::net::encode(snapshot);

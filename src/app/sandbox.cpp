@@ -838,7 +838,8 @@ int main(int argc, char** argv) {
                 if (!text.empty()) text[0] = static_cast<char>(std::toupper(text[0]));
                 return text;
             };
-            for (const char* action : {"idle1", "idle2", "run", "run2"}) {
+            for (const char* action : {"idle1", "idle2", "run", "run2", "attack1", "spell1",
+                                       "spell2", "spell3", "spell4"}) {
                 for (const std::string stem : {lower + "_minigun_" + action, lower + "_" + action,
                                                std::string(action), capitalise(action)}) {
                     const auto bytes =
@@ -2694,7 +2695,10 @@ int main(int argc, char** argv) {
                     if (auto* asset = load_remote_champion(remote.model)) {
                         remote_mesh = &asset->mesh;
                         remote_texture = asset->has_texture ? &asset->texture : nullptr;
-                        const char* action = remote.anim == 1 ? "run" : "idle1";
+                        const char* action = remote.anim == 1   ? "run"
+                                             : remote.anim == 2 ? "attack1"
+                                             : remote.anim == 3 ? "spell1"
+                                                                : "idle1";
                         auto clip_it = asset->clips.find(action);
                         if (clip_it == asset->clips.end()) clip_it = asset->clips.find("idle1");
                         float& phase = remote_phase[remote.id];
