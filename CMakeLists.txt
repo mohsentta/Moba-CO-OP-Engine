@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(lolview
     VERSION 0.2.0
     DESCRIPTION "Standalone League of Legends model/effect viewer and sandbox"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -171,3 +171,29 @@ add_test(NAME core_tests COMMAND lolview_tests)
 
 add_executable(mapgeo_probe src/tools/mapgeo_probe.cpp)
 target_link_libraries(mapgeo_probe PRIVATE lolview_core)
+
+# ---- game host ------------------------------------------------------------
+# The server owns the world; the game mode is a Lua script. Lua is fetched so it
+# is not vendored into the tree.
+option(LOLVIEW_LUA "Build the Lua-driven game host" ON)
+if (LOLVIEW_LUA)
+    include(FetchContent)
+    set(LUA_URL "https://www.lua.org/ftp/lua-5.4.7.tar.gz")
+    FetchContent_Declare(lua URL ${LUA_URL} DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(lua)
+
+    file(GLOB LUA_SOURCES ${lua_SOURCE_DIR}/src/*.c)
+    list(REMOVE_ITEM LUA_SOURCES
+        ${lua_SOURCE_DIR}/src/lua.c
+        ${lua_SOURCE_DIR}/src/luac.c
+        ${lua_SOURCE_DIR}/src/onelua.c)
+    add_library(lua_static STATIC ${LUA_SOURCES})
+    target_include_directories(lua_static PUBLIC ${lua_SOURCE_DIR}/src)
+    target_compile_definitions(lua_static PUBLIC LUA_USE_WINDOWS)
+    if (WIN32)
+        target_link_libraries(lua_static PUBLIC ws2_32)
+    endif()
+
+    add_executable(lolview_server src/server/main.cpp)
+    target_link_libraries(lolview_server PRIVATE lolview_core lua_static)
+endif()
