@@ -101,6 +101,7 @@ message(STATUS "lolview: zstd -> ${LOLVIEW_ZSTD_TARGET}, zlib -> ${LOLVIEW_ZLIB_
 # graphics dependencies, so it builds and tests anywhere a compiler exists.
 # ---------------------------------------------------------------------------
 add_library(lolview_core STATIC
+    src/net/net.cpp
     src/core/asset_source.cpp
     src/core/xxhash64.cpp
     src/formats/bcdec_impl.cpp
@@ -120,6 +121,9 @@ add_library(lolview_core STATIC
     src/formats/wad.cpp)
 
 target_include_directories(lolview_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if (WIN32)
+    target_link_libraries(lolview_core PUBLIC ws2_32)
+endif()
 target_include_directories(lolview_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_compile_definitions(lolview_core PUBLIC LOLVIEW_VERSION="${PROJECT_VERSION}")
 target_link_libraries(lolview_core PUBLIC ${LOLVIEW_ZSTD_TARGET} ${LOLVIEW_ZLIB_TARGET})

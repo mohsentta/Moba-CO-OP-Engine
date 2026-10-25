@@ -8,12 +8,15 @@
 #include <lolview/bin.hpp>
 #include <lolview/decompress.hpp>
 #include <lolview/math.hpp>
+#include <lolview/net.hpp>
 #include <lolview/skn.hpp>
 #include <lolview/wad.hpp>
 #include <lolview/vfx.hpp>
 #include <lolview/xxhash64.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
@@ -429,6 +432,101 @@ void test_asset_source_guardrail() {
     fs::remove_all(dir, ec);
 }
 
+void test_net() {
+    using namespace lolview::net;
+
+    Hello hello;
+    hello.name = "jinx";
+    hello.content_hash = 0x1122334455667788ull;
+    const auto hello_bytes = encode(hello);
+    CHECK_EQ(hello_bytes.size(), std::size_t{12} + 4 + 8 + 2 + 4);
+    CHECK(peek_type(hello_bytes) == MessageType::Hello);
+    const auto hello_back = decode_hello(hello_bytes);
+    CHECK(hello_back.has_value());
+    if (hello_back) {
+        CHECK_EQ(hello_back->name, std::string("jinx"));
+        CHECK_EQ(hello_back->content_hash, hello.content_hash);
+        CHECK_EQ(hello_back->version, kProtocolVersion);
+    }
+
+    Intent intent;
+    intent.player_id = 3;
+    intent.kind = IntentKind::Cast;
+    intent.slot = 2;
+    intent.x = 1.5f;
+    intent.y = -2.25f;
+    intent.z = 300.0f;
+    intent.target = 7;
+    const auto intent_back = decode_intent(encode(intent));
+    CHECK(intent_back.has_value());
+    if (intent_back) {
+        CHECK_EQ(intent_back->player_id, std::uint16_t{3});
+        CHECK(intent_back->kind == IntentKind::Cast);
+        CHECK_EQ(intent_back->slot, std::uint8_t{2});
+        CHECK(std::fabs(intent_back->x - 1.5f) < 1e-6f);
+        CHECK(std::fabs(intent_back->z - 300.0f) < 1e-6f);
+        CHECK_EQ(intent_back->target, std::uint16_t{7});
+    }
+
+    Welcome welcome;
+    welcome.player_id = 1;
+    welcome.tick = 42;
+    welcome.models = {"minion", "jinx"};
+    const auto welcome_back = decode_welcome(encode(welcome));
+    CHECK(welcome_back.has_value());
+    if (welcome_back) {
+        CHECK_EQ(welcome_back->models.size(), std::size_t{2});
+        CHECK_EQ(welcome_back->models[1], std::string("jinx"));
+    }
+
+    Snapshot snapshot;
+    snapshot.tick = 9;
+    UnitState unit;
+    unit.id = 5;
+    unit.model = 1;
+    unit.x = 10.0f;
+    unit.hp = 100.0f;
+    unit.max_hp = 200.0f;
+    unit.team = 1;
+    snapshot.units.push_back(unit);
+    const auto snapshot_back = decode_snapshot(encode(snapshot));
+    CHECK(snapshot_back.has_value());
+    if (snapshot_back) {
+        CHECK_EQ(snapshot_back->tick, std::uint32_t{9});
+        CHECK_EQ(snapshot_back->units.size(), std::size_t{1});
+        CHECK_EQ(snapshot_back->units[0].id, std::uint16_t{5});
+        CHECK_EQ(snapshot_back->units[0].team, std::uint8_t{1});
+    }
+
+    // Truncated or mistyped datagrams must be rejected, not read past their end.
+    auto truncated = encode(intent);
+    truncated.resize(truncated.size() - 3);
+    CHECK(!decode_intent(truncated).has_value());
+    CHECK(!decode_hello(encode(intent)).has_value());
+
+    // Loopback: payloads must survive a real UDP round trip.
+    UdpSocket client;
+    UdpSocket server;
+    CHECK(client.bind(0));
+    CHECK(server.bind(0));
+    client.set_non_blocking(true);
+    server.set_non_blocking(true);
+    const std::uint16_t port = server.local_port();
+    CHECK(port != 0);
+    CHECK(client.send_to("127.0.0.1", port, hello_bytes));
+
+    std::optional<UdpSocket::Datagram> received;
+    for (int attempt = 0; attempt < 300 && !received; ++attempt) {
+        received = server.recv();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(received.has_value());
+    if (received) {
+        CHECK_EQ(received->data.size(), hello_bytes.size());
+        CHECK(decode_hello(received->data).has_value());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -445,6 +543,7 @@ int main() {
         test_cube();
         test_bin_hash();
         test_asset_source_guardrail();
+        test_net();
     } catch (const std::exception& e) {
         std::printf("FAIL uncaught exception: %s\n", e.what());
         ++g_failures;
