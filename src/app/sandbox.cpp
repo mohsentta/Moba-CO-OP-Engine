@@ -1826,9 +1826,44 @@ int main(int argc, char** argv) {
                           IM_COL32(120, 130, 145, 190),
                           "not affiliated with Riot Games - assets read from your own install");
 
+            // ---- editor overlays: world/camera basis vectors ----
+            if (editor_mode) {
+                // Rows of the view matrix are the camera basis the image uses.
+                const lolview::Vec3 cam_right{view.m[0], view.m[4], view.m[8]};
+                const lolview::Vec3 cam_up{view.m[1], view.m[5], view.m[9]};
+                const lolview::Vec3 cam_fwd{-view.m[2], -view.m[6], -view.m[10]};
+                const lolview::Vec3 eye = free_mode ? free_camera.position : camera.eye();
+
+                char lines[4][96];
+                std::snprintf(lines[0], sizeof(lines[0]), "eye    %8.1f %8.1f %8.1f", eye.x,
+                              eye.y, eye.z);
+                std::snprintf(lines[1], sizeof(lines[1]), "right  %8.2f %8.2f %8.2f",
+                              cam_right.x, cam_right.y, cam_right.z);
+                std::snprintf(lines[2], sizeof(lines[2]), "up     %8.2f %8.2f %8.2f", cam_up.x,
+                              cam_up.y, cam_up.z);
+                std::snprintf(lines[3], sizeof(lines[3]), "fwd    %8.2f %8.2f %8.2f", cam_fwd.x,
+                              cam_fwd.y, cam_fwd.z);
+
+                float widest = 0.0f;
+                for (const auto& line : lines) {
+                    widest = std::max(widest, ImGui::CalcTextSize(line).x);
+                }
+                const float line_height = ImGui::GetTextLineHeightWithSpacing();
+                const float box_width = widest + 20.0f;
+                const ImVec2 top_left(static_cast<float>(w) - box_width - 16.0f, 8.0f);
+                draw->AddRectFilled(
+                    ImVec2(top_left.x - 6.0f, top_left.y - 4.0f),
+                    ImVec2(top_left.x + box_width, top_left.y + line_height * 4.0f + 4.0f),
+                    IM_COL32(12, 16, 22, 200), 4.0f);
+                for (int i = 0; i < 4; ++i) {
+                    draw->AddText(ImVec2(top_left.x, top_left.y + line_height * i),
+                                  IM_COL32(190, 220, 200, 235), lines[i]);
+                }
+            }
+
             // ---- map editor (F2) ----
             if (editor_mode && !map_pieces.empty()) {
-                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(w) - 400.0f, 56.0f),
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(w) - 400.0f, 108.0f),
                                         ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(ImVec2(380.0f, 540.0f), ImGuiCond_FirstUseEver);
                 ImGui::Begin("Map editor");
