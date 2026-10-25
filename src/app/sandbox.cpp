@@ -1918,6 +1918,7 @@ int main(int argc, char** argv) {
 
                     switch (event.key.scancode) {
                         case SDL_SCANCODE_Q:
+                            if (editor_mode) break;
                             // Jinx-style weapons: Q swaps the animation set
                             // between minigun and rocket launcher.
                             if (clips.count("rlauncher_run") || clips.count("rlauncher_idle1")) {
@@ -1926,27 +1927,33 @@ int main(int argc, char** argv) {
                                 start_cast(lolview::EffectKind::Spell1, 0, aim);
                             }
                             break;
-                        case SDL_SCANCODE_W:
+                                                case SDL_SCANCODE_W:
+                            if (editor_mode) break;
                             start_cast(lolview::EffectKind::Spell2, 1, aim);
                             break;
                         case SDL_SCANCODE_E:
+                            if (editor_mode) break;
                             start_cast(lolview::EffectKind::Spell3, 2, aim);
                             break;
                         case SDL_SCANCODE_R:
+                            if (editor_mode) break;
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
                         case SDL_SCANCODE_A:
+                            if (editor_mode) break;
                             // Basic attack only when something is actually in range.
                             if (net_target == 0xffff) break;
                             ++attack_variant;
                             attack_lock = 0.05f;
-                            if (connected && net_target != 0xffff) {
+                            if (connected) {
                                 lolview::net::Intent intent;
                                 intent.player_id = local_player;
                                 intent.kind = lolview::net::IntentKind::Attack;
                                 intent.target = net_target;
                                 net_socket.send_to(server_host, server_port,
-                                                   lolview::net::encode(intent));                            // Commit: stop for a moment and face the target.
+                                                   lolview::net::encode(intent));
+                            }
+                            // Commit: stop for a moment and face the target.
                             attack_hold = 0.25f;
                             has_move_target = false;
                             for (const auto& remote : remote_units) {
@@ -1954,7 +1961,7 @@ int main(int argc, char** argv) {
                                 attack_facing_x = remote.x - champion_position.x;
                                 attack_facing_z = remote.z - champion_position.z;
                                 break;
-                            }                            }
+                            }
                             break;
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
@@ -2667,7 +2674,7 @@ int main(int argc, char** argv) {
             const float start_y = static_cast<float>(h) - 74.0f;
             const char* keys[4] = {"Q", "W", "E", "R"};
 
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < 4 && !editor_mode; ++i) {
                 const ImVec2 top_left(start_x + i * (icon + gap), start_y);
                 const ImVec2 bottom_right(top_left.x + icon, top_left.y + icon);
 
@@ -2821,7 +2828,8 @@ int main(int argc, char** argv) {
             }
 
             // ---- map editor (F2) ----
-            if (editor_mode && !map_pieces.empty()) {
+            // Hidden while the path editor is open so it does not cover the canvas.
+            if (editor_mode && !path_edit && !map_pieces.empty()) {
                 ImGui::SetNextWindowPos(ImVec2(static_cast<float>(w) - 400.0f, 108.0f),
                                         ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(ImVec2(380.0f, 540.0f), ImGuiCond_FirstUseEver);
