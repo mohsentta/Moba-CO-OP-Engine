@@ -1704,6 +1704,7 @@ int main(int argc, char** argv) {
         bool connected = false;
         std::uint16_t local_player = 0;
         std::uint16_t own_unit = 0;
+        int own_anim = 0;  // host-assigned animation state for our unit
         // Where the host says our unit is; the camera glides towards this instead
         // of snapping to each 20 Hz snapshot.
         lolview::Vec3 own_target_position = spawn;
@@ -2247,10 +2248,13 @@ int main(int argc, char** argv) {
                     while (difference > 3.14159265f) difference -= 6.2831853f;
                     while (difference < -3.14159265f) difference += 6.2831853f;
                     champion_yaw += difference * std::min(1.0f, 16.0f * dt);
-                    moving = true;
                 } else {
                     champion_position = own_target_position;
                 }
+                // The host decides whether we are running; distance-based
+                // detection flickered between run and idle every time the client
+                // caught up with the snapshot.
+                moving = (own_anim == 1);
             } else if (has_move_target && attack_hold <= 0.0f) {
                 lolview::Vec3 delta = move_target - champion_position;
                 delta.y = 0.0f;
@@ -2559,6 +2563,7 @@ int main(int argc, char** argv) {
                 for (const auto& remote : remote_units) {
                     if (remote.id != own_unit) continue;
                     own_target_position = lolview::Vec3{remote.x, spawn.y, remote.z};
+                    own_anim = remote.anim;
                     break;
                 }
 
