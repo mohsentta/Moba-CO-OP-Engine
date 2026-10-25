@@ -16,6 +16,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <stb_image_write.h>
@@ -212,6 +213,19 @@ struct Renderer::Impl {
     unsigned sprite_texture = 0;
     unsigned bone_ubo = 0;
     std::string version;
+
+    // Static geometry uploaded once (map pieces, props).
+    struct CachedMesh {
+        unsigned vao = 0;
+        unsigned vbo = 0;
+        unsigned ebo = 0;
+        std::uint32_t index_count = 0;
+        std::vector<DrawRange> ranges;
+    };
+    std::vector<CachedMesh> meshes;
+    std::unordered_map<const Skn*, int> mesh_ids;
+    std::vector<unsigned> textures;
+    std::unordered_map<const TexImage*, int> texture_ids;
 
     ~Impl() {
         if (bone_ubo != 0 && gl::DeleteBuffers != nullptr) gl::DeleteBuffers(1, &bone_ubo);
@@ -630,6 +644,146 @@ void Renderer::render_skn(const Skn& mesh, const TexImage* texture,
     gl::DeleteFramebuffers(1, &fbo);
     gl::DeleteRenderbuffers(1, &depth);
     glDeleteTextures(1, &color);
+}
+
+int Renderer::cache_mesh(const Skn& mesh) {
+    const auto existing = impl_->mesh_ids.find(&mesh);
+    if (existing != impl_->mesh_ids.end()) return existing->second;
+
+    std::vector<Vertex> vertices;
+    vertices.reserve(mesh.vertices().size());
+    for (const auto& v : mesh.vertices()) {
+        Vertex vertex{};
+        vertex.px = v.position[0];
+        vertex.py = v.position[1];
+        vertex.pz = v.position[2];
+        vertex.nx = v.normal[0];
+        vertex.ny = v.normal[1];
+        vertex.nz = v.normal[2];
+        vertex.u = v.uv[0];
+        vertex.v = v.uv[1];
+        for (std::size_t i = 0; i < 4; ++i) {
+            vertex.bones[i] = v.bone_indices[i];
+            vertex.weights[i] = v.weights[i];
+        }
+        vertices.push_back(vertex);
+    }
+
+    std::vector<std::uint32_t> indices;
+    indices.reserve(mesh.indices().size());
+    for (std::uint16_t index : mesh.indices()) indices.push_back(index);
+
+    std::vector<DrawRange> ranges;
+    static const Vec3 kPalette[] = {
+        {0.62f, 0.62f, 0.58f}, {0.55f, 0.58f, 0.52f}, {0.66f, 0.60f, 0.52f},
+        {0.52f, 0.56f, 0.60f}, {0.60f, 0.55f, 0.62f}, {0.58f, 0.62f, 0.55f},
+    };
+    std::size_t material_index = 0;
+    for (const auto& material : mesh.materials()) {
+        if (material.num_indices == 0) continue;
+        // Stable per-material tint for meshes that resolve no texture.
+        const std::size_t hash = std::hash<std::string>{}(material.name);
+        const Vec3 color = kPalette[(hash + material_index) % (sizeof(kPalette) / sizeof(kPalette[0]))];
+        ++material_index;
+        ranges.push_back(DrawRange{material.start_index, material.num_indices, color});
+    }
+    if (ranges.empty() && !indices.empty()) {
+        ranges.push_back(DrawRange{0, static_cast<std::uint32_t>(indices.size()),
+                                   Vec3{0.6f, 0.6f, 0.58f}});
+    }
+
+    Impl::CachedMesh cached;
+    gl::GenVertexArrays(1, &cached.vao);
+    gl::BindVertexArray(cached.vao);
+    gl::GenBuffers(1, &cached.vbo);
+    gl::BindBuffer(gl::ARRAY_BUFFER, cached.vbo);
+    gl::BufferData(gl::ARRAY_BUFFER,
+                   static_cast<long long>(vertices.size() * sizeof(Vertex)), vertices.data(),
+                   gl::STATIC_DRAW);
+    gl::GenBuffers(1, &cached.ebo);
+    gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, cached.ebo);
+    gl::BufferData(gl::ELEMENT_ARRAY_BUFFER,
+                   static_cast<long long>(indices.size() * sizeof(std::uint32_t)),
+                   indices.data(), gl::STATIC_DRAW);
+    vertex_input_layout();
+    cached.index_count = static_cast<std::uint32_t>(indices.size());
+    cached.ranges = std::move(ranges);
+
+    impl_->meshes.push_back(std::move(cached));
+    const int id = static_cast<int>(impl_->meshes.size()) - 1;
+    impl_->mesh_ids[&mesh] = id;
+    return id;
+}
+
+int Renderer::cache_texture(const TexImage& image) {
+    const auto existing = impl_->texture_ids.find(&image);
+    if (existing != impl_->texture_ids.end()) return existing->second;
+    if (image.width <= 0 || image.height <= 0 || image.rgba.empty()) return -1;
+
+    unsigned name = 0;
+    glGenTextures(1, &name);
+    glBindTexture(GL_TEXTURE_2D, name);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(gl::RGBA8), image.width, image.height, 0,
+                 static_cast<GLenum>(gl::RGBA), static_cast<GLenum>(gl::UNSIGNED_BYTE),
+                 image.rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(gl::LINEAR));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(gl::LINEAR));
+
+    impl_->textures.push_back(name);
+    const int id = static_cast<int>(impl_->textures.size()) - 1;
+    impl_->texture_ids[&image] = id;
+    return id;
+}
+
+void Renderer::draw_cached(int mesh_id, int texture_id, const Mat4& model, const Mat4& view,
+                           const Mat4& proj, int width, int height, int alpha_mode) {
+    if (mesh_id < 0 || mesh_id >= static_cast<int>(impl_->meshes.size())) return;
+    const auto& cached = impl_->meshes[static_cast<std::size_t>(mesh_id)];
+
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_CULL_FACE);
+
+    const Mat4 mvp = proj * view * model;
+    gl::UseProgram(impl_->program);
+    gl::UniformMatrix4fv(gl::GetUniformLocation(impl_->program, "u_mvp"), 1, 0, mvp.data());
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_skinned"), 0);
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_alpha_mode"), alpha_mode);
+
+    const bool textured = texture_id >= 0 &&
+                          texture_id < static_cast<int>(impl_->textures.size());
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_use_texture"), textured ? 1 : 0);
+    if (textured) {
+        gl::ActiveTexture(gl::TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, impl_->textures[static_cast<std::size_t>(texture_id)]);
+        gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_texture"), 0);
+    }
+
+    if (alpha_mode == 2) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+    } else {
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+    }
+
+    gl::BindVertexArray(cached.vao);
+    const int loc_color = gl::GetUniformLocation(impl_->program, "u_color");
+    for (const auto& range : cached.ranges) {
+        const Vec3 color = textured ? Vec3{1.0f, 1.0f, 1.0f} : range.color;
+        gl::Uniform3f(loc_color, color.x, color.y, color.z);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(range.count), GL_UNSIGNED_INT,
+                       reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                           range.start_index) * sizeof(std::uint32_t)));
+    }
+
+    if (alpha_mode == 2) {
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+    }
 }
 
 }  // namespace lolview

@@ -95,6 +95,27 @@ the spell clip until it finishes, then returns to movement/idle.
 
 Camera feel can be tuned without a rebuild: `--pitch 40 --distance 880`.
 
+### Map editor
+
+With `--map`, the whole Rift is loaded as 586 individually editable pieces
+(textured from the map archive, cached on the GPU). The "Map editor" window lets
+you:
+
+- pick a piece from the searchable list, or click it in the world
+- move it (`move`), rotate it (`yaw`) and scale it (`scale`) — rotation and
+  scaling pivot around the piece's own centre
+- hide pieces, reset one piece or everything
+- **Save scene** to a text file (`--scene path`, default `scenes/map.scene`)
+  with one line per piece: `index px py pz yaw_degrees scale visible`
+
+The saved scene is applied automatically on the next launch, so an assembled
+layout persists. `--save-scene` writes the current layout at startup.
+
+```powershell
+.\build\lolview_sandbox.exe --game-dir "..." --champion Ahri --map `
+    --scene scenes\my_layout.scene
+```
+
 Headless capture (used for regression screenshots):
 
 ```powershell

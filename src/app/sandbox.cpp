@@ -33,9 +33,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -62,6 +64,22 @@ struct LeagueCamera {
     lolview::Mat4 view() const {
         return lolview::look_at(eye(), focus, lolview::Vec3{0.0f, 1.0f, 0.0f});
     }
+};
+
+struct MapPiece {
+    lolview::Skn mesh;
+    int mesh_id = -1;
+    int texture_id = -1;
+    lolview::Vec3 position{};
+    lolview::Vec3 initial_position{};
+    float yaw = 0.0f;
+    float initial_yaw = 0.0f;
+    float scale = 1.0f;
+    bool visible = true;
+    int alpha_mode = 0;
+    std::string material;
+    lolview::Vec3 center{};
+    float radius = 0.0f;
 };
 
 struct TerrainGroup {
@@ -93,6 +111,8 @@ struct Args {
     std::string pet;
     std::string pet_archive = "Map11";
     bool load_map = false;
+    bool save_scene_on_start = false;
+    std::string scene_path;
     std::string capture;
     std::string auto_cast;
     float capture_after = -1.0f;
@@ -238,27 +258,34 @@ lolview::Mat4 model_matrix(const lolview::Vec3& position, float yaw) {
     return lolview::translation(position) * rotation_y(yaw);
 }
 
-// Camera ray through a screen pixel, intersected with the ground plane y = 0.
-bool pick_ground(const LeagueCamera& camera, float screen_x, float screen_y, int width,
-                 int height, lolview::Vec3& out) {
+// Camera ray through a screen pixel.
+bool camera_ray(const LeagueCamera& camera, float screen_x, float screen_y, int width,
+                int height, lolview::Vec3& origin, lolview::Vec3& direction) {
     const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
     const float tan_half = std::tan(kFovDegrees * 0.5f * kPi / 180.0f);
 
-    const lolview::Vec3 eye = camera.eye();
-    const lolview::Vec3 forward = lolview::normalize(camera.focus - eye);
+    origin = camera.eye();
+    const lolview::Vec3 forward = lolview::normalize(camera.focus - origin);
     const lolview::Vec3 right =
         lolview::normalize(lolview::cross(forward, lolview::Vec3{0.0f, 1.0f, 0.0f}));
     const lolview::Vec3 up = lolview::cross(right, forward);
 
     const float ndc_x = (2.0f * screen_x / static_cast<float>(width)) - 1.0f;
     const float ndc_y = 1.0f - (2.0f * screen_y / static_cast<float>(height));
-    const lolview::Vec3 direction = lolview::normalize(
-        forward + right * (ndc_x * tan_half * aspect) + up * (ndc_y * tan_half));
+    direction = lolview::normalize(forward + right * (ndc_x * tan_half * aspect) +
+                                   up * (ndc_y * tan_half));
+    return true;
+}
 
+// Camera ray intersected with the ground plane y = 0.
+bool pick_ground(const LeagueCamera& camera, float screen_x, float screen_y, int width,
+                 int height, lolview::Vec3& out) {
+    lolview::Vec3 origin, direction;
+    camera_ray(camera, screen_x, screen_y, width, height, origin, direction);
     if (std::fabs(direction.y) < 1e-5f) return false;
-    const float t = -eye.y / direction.y;
+    const float t = -origin.y / direction.y;
     if (t < 0.0f) return false;
-    out = eye + direction * t;
+    out = origin + direction * t;
     return true;
 }
 
@@ -383,6 +410,10 @@ int main(int argc, char** argv) {
             if (!next(args.pet_archive)) return 2;
         } else if (arg == "--map") {
             args.load_map = true;
+        } else if (arg == "--scene") {
+            if (!next(args.scene_path)) return 2;
+        } else if (arg == "--save-scene") {
+            args.save_scene_on_start = true;
         } else if (arg == "--capture") {
             if (!next(args.capture)) return 2;
         } else if (arg == "--auto-cast") {
@@ -550,6 +581,8 @@ int main(int argc, char** argv) {
         lolview::Skn terrain_mesh;
         bool has_terrain = false;
         std::vector<TerrainGroup> terrain_groups;
+        std::vector<MapPiece> map_pieces;
+        std::map<std::string, lolview::TexImage> terrain_textures;
         lolview::Vec3 spawn{0.0f, 0.0f, 0.0f};
 
         if (args.load_map) {
@@ -770,10 +803,11 @@ int main(int argc, char** argv) {
                             const auto found = map_archive->find(lolview::path_hash(path));
                             if (!found) continue;
                             try {
-                                group.texture = lolview::decode_tex(
+                                auto decoded = lolview::decode_tex(
                                     map_archive->read_chunk(map_archive->entries()[*found]));
                                 group.has_texture = true;
                                 group.texture_path = path;
+                                terrain_textures[group.material] = std::move(decoded);
                                 ++textured;
                             } catch (const std::exception&) {
                             }
@@ -805,6 +839,74 @@ int main(int argc, char** argv) {
                             std::printf("    untextured: %s\n", group.material.c_str());
                         }
                     }
+
+                    // ---- every mesh also becomes an individually editable piece
+                    map_pieces.reserve(asset.meshes.size());
+                    for (const auto& source : asset.meshes) {
+                        if (source.vertices.empty() || source.indices.empty()) continue;
+                        if (source.vertices.size() > 65535) continue;
+
+                        MapPiece piece;
+                        piece.material = source.submeshes.empty()
+                                             ? std::string("Terrain")
+                                             : source.submeshes.front().material;
+
+                        std::vector<lolview::SknMaterial> piece_materials(1);
+                        piece_materials[0].name = piece.material;
+                        piece_materials[0].num_vertices =
+                            static_cast<std::uint32_t>(source.vertices.size());
+                        piece_materials[0].num_indices =
+                            static_cast<std::uint32_t>(source.indices.size());
+
+                        std::vector<lolview::SknVertex> piece_vertices(source.vertices.size());
+                        for (std::size_t v = 0; v < source.vertices.size(); ++v) {
+                            const auto& in = source.vertices[v];
+                            lolview::SknVertex out{};
+                            out.position = {in.px, in.py, in.pz};
+                            out.normal = {in.nx, in.ny, in.nz};
+                            out.uv = {in.u, in.v};
+                            out.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+                            piece_vertices[v] = out;
+                        }
+                        std::vector<std::uint16_t> piece_indices(source.indices.begin(),
+                                                                 source.indices.end());
+                        piece.mesh = lolview::Skn::from_parts(std::move(piece_materials),
+                                                             std::move(piece_vertices),
+                                                             std::move(piece_indices));
+                        piece.position = {source.transform.m[12], source.transform.m[13],
+                                          source.transform.m[14]};
+
+                        const auto bounds = piece.mesh.compute_bounds();
+                        piece.center = {(bounds.min[0] + bounds.max[0]) * 0.5f,
+                                        (bounds.min[1] + bounds.max[1]) * 0.5f,
+                                        (bounds.min[2] + bounds.max[2]) * 0.5f};
+                        const float dx = bounds.max[0] - bounds.min[0];
+                        const float dy = bounds.max[1] - bounds.min[1];
+                        const float dz = bounds.max[2] - bounds.min[2];
+                        piece.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+
+                        std::string material_lower = piece.material;
+                        std::transform(material_lower.begin(), material_lower.end(),
+                                       material_lower.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        const bool cutout =
+                            terrain_textures.count(piece.material) > 0 &&
+                            (piece.material.find("1bitalpha") != std::string::npos ||
+                             material_lower.find("decal") != std::string::npos ||
+                             material_lower.find("leaf") != std::string::npos ||
+                             material_lower.find("foliage") != std::string::npos ||
+                             material_lower.find("grass") != std::string::npos);
+                        const bool blended = material_lower.find("water") != std::string::npos ||
+                                             material_lower.find("ocean") != std::string::npos;
+                        piece.alpha_mode = blended ? 2 : (cutout ? 1 : 0);
+
+                        map_pieces.push_back(std::move(piece));
+                    }
+                    for (auto& piece : map_pieces) {
+                        piece.initial_position = piece.position;
+                        piece.initial_yaw = piece.yaw;
+                    }
+                    std::printf("  pieces  : %zu editable meshes\n", map_pieces.size());
                 } catch (const std::exception& error) {
                     std::fprintf(stderr, "warning: terrain parse failed: %s\n", error.what());
                 }
@@ -836,6 +938,82 @@ int main(int argc, char** argv) {
         }
 
         // ---- scene state ----
+        std::size_t cached_textures = 0;
+        for (auto& piece : map_pieces) {
+            piece.mesh_id = renderer.cache_mesh(piece.mesh);
+            const auto found = terrain_textures.find(piece.material);
+            if (found != terrain_textures.end()) {
+                piece.texture_id = renderer.cache_texture(found->second);
+                ++cached_textures;
+            }
+        }
+        if (!map_pieces.empty()) {
+            std::printf("  cached  : %zu pieces, %zu textures\n", map_pieces.size(),
+                        cached_textures);
+        }
+
+        // ---- scene plumbing: save/load piece alignment + rotation ----
+        std::string scene_path =
+            args.scene_path.empty() ? std::string("scenes/map.scene") : args.scene_path;
+        std::string editor_status = "no scene loaded";
+        int selected_piece = -1;
+        char piece_filter[64] = "";
+
+        const auto save_scene = [&]() {
+            std::error_code code;
+            std::filesystem::create_directories(
+                std::filesystem::path(scene_path).parent_path(), code);
+            std::ofstream out(scene_path, std::ios::trunc);
+            if (!out) {
+                editor_status = "cannot write " + scene_path;
+                return;
+            }
+            out << "# lolview map scene v1\n";
+            out << "# index px py pz yaw_degrees scale visible\n";
+            for (std::size_t i = 0; i < map_pieces.size(); ++i) {
+                const auto& piece = map_pieces[i];
+                out << i << ' ' << piece.position.x << ' ' << piece.position.y << ' '
+                    << piece.position.z << ' ' << piece.yaw << ' ' << piece.scale << ' '
+                    << (piece.visible ? 1 : 0) << '\n';
+            }
+            editor_status = "saved " + std::to_string(map_pieces.size()) + " pieces to " +
+                            scene_path;
+        };
+
+        const auto load_scene = [&]() {
+            std::ifstream in(scene_path);
+            if (!in) {
+                editor_status = "no scene at " + scene_path;
+                return;
+            }
+            std::string line;
+            std::size_t applied = 0;
+            while (std::getline(in, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                std::istringstream stream(line);
+                std::size_t index = 0;
+                float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, scale = 1.0f;
+                int visible = 1;
+                if (!(stream >> index >> x >> y >> z >> yaw >> scale >> visible)) continue;
+                if (index >= map_pieces.size()) continue;
+                auto& piece = map_pieces[index];
+                piece.position = {x, y, z};
+                piece.yaw = yaw;
+                piece.scale = scale;
+                piece.visible = visible != 0;
+                ++applied;
+            }
+            editor_status = "loaded " + std::to_string(applied) + " pieces from " + scene_path;
+        };
+
+        load_scene();
+        if (args.save_scene_on_start) {
+            for (auto& piece : map_pieces) {
+                piece.initial_position = piece.position;
+                piece.initial_yaw = piece.yaw;
+            }
+            save_scene();
+        }
         LeagueCamera camera;
         if (args.pitch_degrees > 0.0f) camera.pitch = args.pitch_degrees * kPi / 180.0f;
         if (args.distance > 0.0f) camera.distance = args.distance;
@@ -1098,7 +1276,26 @@ int main(int argc, char** argv) {
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 1.0f, 8000.0f);
 
-            if (!terrain_groups.empty()) {
+            if (!map_pieces.empty()) {
+                for (int mode = 0; mode <= 2; ++mode) {
+                    for (const auto& piece : map_pieces) {
+                        if (!piece.visible || piece.alpha_mode != mode) continue;
+                        // Rotate and scale around the piece's own centre so the
+                        // editor behaves predictably (vertices are baked in
+                        // world space, so the pivot must be explicit).
+                        const lolview::Mat4 pivot = lolview::translation(piece.center);
+                        const lolview::Mat4 unpivot = lolview::translation(
+                            lolview::Vec3{-piece.center.x, -piece.center.y, -piece.center.z});
+                        const lolview::Mat4 model =
+                            lolview::translation(piece.position) * pivot *
+                            rotation_y(piece.yaw) *
+                            lolview::scaling(lolview::Vec3{piece.scale, piece.scale, piece.scale}) *
+                            unpivot;
+                        renderer.draw_cached(piece.mesh_id, piece.texture_id, model, view, proj,
+                                             w, h, mode);
+                    }
+                }
+            } else if (!terrain_groups.empty()) {
                 for (int mode = 0; mode <= 2; ++mode) {
                     for (const auto& group : terrain_groups) {
                         if (group.alpha_mode != mode) continue;
@@ -1133,6 +1330,42 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
+
+            // Click in the world selects a piece (unless the editor has the mouse).
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                !ImGui::GetIO().WantCaptureMouse && !map_pieces.empty()) {
+                float mouse_x = 0.0f, mouse_y = 0.0f;
+                SDL_GetMouseState(&mouse_x, &mouse_y);
+                lolview::Vec3 ray_origin, ray_direction;
+                camera_ray(camera, mouse_x, mouse_y, w, h, ray_origin, ray_direction);
+                float best_t = 1e30f;
+                int best_index = -1;
+                for (std::size_t i = 0; i < map_pieces.size(); ++i) {
+                    const auto& piece = map_pieces[i];
+                    if (!piece.visible) continue;
+                    const lolview::Vec3 center{piece.position.x + piece.center.x * piece.scale,
+                                               piece.position.y + piece.center.y * piece.scale,
+                                               piece.position.z + piece.center.z * piece.scale};
+                    const lolview::Vec3 to_center = center - ray_origin;
+                    const float t = to_center.x * ray_direction.x +
+                                    to_center.y * ray_direction.y +
+                                    to_center.z * ray_direction.z;
+                    if (t <= 0.0f) continue;
+                    const lolview::Vec3 closest{to_center.x - ray_direction.x * t,
+                                                to_center.y - ray_direction.y * t,
+                                                to_center.z - ray_direction.z * t};
+                    const float distance = lolview::length(closest);
+                    const float radius = std::max(piece.radius * piece.scale, 15.0f);
+                    if (distance <= radius && t < best_t) {
+                        best_t = t;
+                        best_index = static_cast<int>(i);
+                    }
+                }
+                if (best_index >= 0) {
+                    selected_piece = best_index;
+                    editor_status = "selected piece " + std::to_string(best_index);
+                }
+            }
 
             ImDrawList* draw = ImGui::GetBackgroundDrawList();
 
@@ -1231,8 +1464,69 @@ int main(int argc, char** argv) {
                           IM_COL32(120, 130, 145, 190),
                           "not affiliated with Riot Games - assets read from your own install");
 
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            // ---- map editor ----
+            if (!map_pieces.empty()) {
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(w) - 400.0f, 56.0f),
+                                        ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(ImVec2(380.0f, 540.0f), ImGuiCond_FirstUseEver);
+                ImGui::Begin("Map editor");
+                ImGui::Text("%zu pieces   |   %s", map_pieces.size(), editor_status.c_str());
+                if (ImGui::Button("Save scene")) save_scene();
+                ImGui::SameLine();
+                if (ImGui::Button("Reload")) load_scene();
+                ImGui::SameLine();
+                if (ImGui::Button("Reset all")) {
+                    for (auto& piece : map_pieces) {
+                        piece.position = piece.initial_position;
+                        piece.yaw = piece.initial_yaw;
+                        piece.scale = 1.0f;
+                        piece.visible = true;
+                    }
+                    editor_status = "reset all pieces";
+                }
+                ImGui::InputText("filter", piece_filter, sizeof(piece_filter));
+                ImGui::BeginChild("piece list", ImVec2(0.0f, 250.0f), true);
+                const std::string filter_text(piece_filter);
+                int shown = 0;
+                for (std::size_t i = 0; i < map_pieces.size() && shown < 600; ++i) {
+                    const auto& piece = map_pieces[i];
+                    if (!filter_text.empty() &&
+                        piece.material.find(filter_text) == std::string::npos) {
+                        continue;
+                    }
+                    ++shown;
+                    const std::size_t slash = piece.material.rfind('/');
+                    const std::string name = slash == std::string::npos
+                                                 ? piece.material
+                                                 : piece.material.substr(slash + 1);
+                    const std::string label = std::to_string(i) + "  " + name;
+                    if (ImGui::Selectable(label.c_str(),
+                                          selected_piece == static_cast<int>(i))) {
+                        selected_piece = static_cast<int>(i);
+                    }
+                }
+                ImGui::EndChild();
+
+                if (selected_piece >= 0 &&
+                    selected_piece < static_cast<int>(map_pieces.size())) {
+                    auto& piece = map_pieces[selected_piece];
+                    ImGui::TextWrapped("%s", piece.material.c_str());
+                    ImGui::DragFloat3("move", &piece.position.x, 5.0f);
+                    ImGui::DragFloat("yaw", &piece.yaw, 0.5f, -180.0f, 180.0f);
+                    ImGui::DragFloat("scale", &piece.scale, 0.02f, 0.05f, 20.0f);
+                    ImGui::Checkbox("visible", &piece.visible);
+                    if (ImGui::Button("reset piece")) {
+                        piece.position = piece.initial_position;
+                        piece.yaw = piece.initial_yaw;
+                        piece.scale = 1.0f;
+                    }
+                } else {
+                    ImGui::TextUnformatted("click a piece in the world, or pick from the list");
+                }
+                ImGui::End();
+            }
+
+            ImGui::Render();            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
             if (!headless) {
                 renderer.end_frame();

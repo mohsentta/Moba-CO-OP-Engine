@@ -71,6 +71,14 @@ public:
     // Alpha handling for draw_scene: 0 opaque, 1 cutout (alpha test), 2 blended.
     void set_alpha_mode(int mode) noexcept { alpha_mode_ = mode; }
 
+    // Cached geometry for scenes with many static pieces: upload once, draw many.
+    // Ids stay valid for the lifetime of the renderer; the mesh/texture must
+    // outlive the cache entry (keyed by address).
+    int cache_mesh(const Skn& mesh);
+    int cache_texture(const TexImage& image);
+    void draw_cached(int mesh_id, int texture_id, const Mat4& model, const Mat4& view,
+                     const Mat4& proj, int width, int height, int alpha_mode);
+
 private:
     struct Impl;
     Impl* impl_ = nullptr;
