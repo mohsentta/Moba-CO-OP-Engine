@@ -1875,10 +1875,14 @@ int main(int argc, char** argv) {
                             lolview::net::Intent intent;
                             intent.player_id = local_player;
                             intent.kind = lolview::net::IntentKind::Move;
-                            intent.x = ground_point.x;
-                            intent.z = ground_point.z;
-                            net_socket.send_to(server_host, server_port,
-                                               lolview::net::encode(intent));
+                            intent.x = ground_point.x - spawn.x;
+                            intent.z = ground_point.z - spawn.z;
+                            const bool sent = net_socket.send_to(
+                                server_host, server_port, lolview::net::encode(intent));
+                            std::printf("  net     : move intent (%.0f, %.0f) %s\n", intent.x,
+                                        intent.z, sent ? "sent" : "FAILED");
+                        } else {
+                            std::printf("  net     : right click ignored (not connected)\n");
                         }
                     }
                 }
