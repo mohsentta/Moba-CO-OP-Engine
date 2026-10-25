@@ -55,11 +55,14 @@ struct LeagueCamera {
     lolview::Vec3 focus{0.0f, 0.0f, 0.0f};  // ground point being looked at
     float distance = 1800.0f;
     float pitch = 55.0f * kPi / 180.0f;
+    float yaw = 0.0f;  // 0 looks toward +Z; rotate to view from another side
     bool locked = true;
 
     lolview::Vec3 eye() const {
-        return lolview::Vec3{focus.x, focus.y + distance * std::sin(pitch),
-                             focus.z - distance * std::cos(pitch)};
+        const float cos_pitch = std::cos(pitch);
+        return lolview::Vec3{focus.x - std::sin(yaw) * cos_pitch * distance,
+                             focus.y + std::sin(pitch) * distance,
+                             focus.z - std::cos(yaw) * cos_pitch * distance};
     }
     lolview::Mat4 view() const {
         return lolview::look_at(eye(), focus, lolview::Vec3{0.0f, 1.0f, 0.0f});
@@ -139,6 +142,7 @@ struct Args {
     float exit_after = -1.0f;
     float pitch_degrees = 0.0f;   // 0 = use the default
     float distance = 0.0f;
+    float camera_yaw_degrees = 0.0f;
     int width = 1600;
     int height = 900;
 };
@@ -510,6 +514,10 @@ int main(int argc, char** argv) {
             std::string value;
             if (!next(value)) return 2;
             args.distance = static_cast<float>(std::atof(value.c_str()));
+        } else if (arg == "--cam-yaw") {
+            std::string value;
+            if (!next(value)) return 2;
+            args.camera_yaw_degrees = static_cast<float>(std::atof(value.c_str()));
         } else if (arg == "--width") {
             std::string value;
             if (!next(value)) return 2;
@@ -1174,6 +1182,7 @@ int main(int argc, char** argv) {
         }
         if (args.pitch_degrees > 0.0f) camera.pitch = args.pitch_degrees * kPi / 180.0f;
         if (args.distance > 0.0f) camera.distance = args.distance;
+        camera.yaw = args.camera_yaw_degrees * kPi / 180.0f;
         lolview::Vec3 champion_position = spawn;
         float champion_yaw = 0.0f;
         bool has_move_target = false;
@@ -1376,6 +1385,21 @@ int main(int argc, char** argv) {
                     free_camera.position =
                         free_camera.position + lolview::normalize(delta) * (speed * dt);
                 }
+            }
+
+            // ---- camera yaw: hold - / + to orbit the view around the champion ----
+            if (!free_mode) {
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                bool changed = false;
+                if (keys[SDL_SCANCODE_MINUS] || keys[SDL_SCANCODE_KP_MINUS]) {
+                    camera.yaw -= 1.6f * dt;
+                    changed = true;
+                }
+                if (keys[SDL_SCANCODE_EQUALS] || keys[SDL_SCANCODE_KP_PLUS]) {
+                    camera.yaw += 1.6f * dt;
+                    changed = true;
+                }
+                (void)changed;
             }
 
             // ---- movement ----
@@ -1710,9 +1734,9 @@ int main(int argc, char** argv) {
                           "lolview practice tool");
             char status[160];
             std::snprintf(status, sizeof(status),
-                          "%.0f fps   |   RMB move   S stop   QWER cast   Y %s camera   "
-                          "F2 %s",
-                          fps, camera.locked ? "locked" : "free",
+                          "%.0f fps   |   RMB move   S stop   QWER cast   -/+ rotate (%.0f deg)   "
+                          "Y %s   F2 %s",
+                          fps, camera.yaw * 180.0f / kPi, camera.locked ? "locked" : "free",
                           editor_mode ? "editor ON (WASD fly)" : "editor");
             draw->AddText(ImVec2(14.0f, 30.0f), IM_COL32(150, 160, 175, 210), status);
             draw->AddText(ImVec2(14.0f, static_cast<float>(h) - 22.0f),
