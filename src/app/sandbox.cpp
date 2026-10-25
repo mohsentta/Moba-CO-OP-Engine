@@ -375,6 +375,42 @@ lolview::TexImage make_ground_texture() {
     return image;
 }
 
+// Map textures are 2048^2; the practice view never needs that, and keeping all
+// of them at full size would cost gigabytes. Box-filter down to a cap.
+lolview::TexImage downscale_texture(const lolview::TexImage& source, int max_size) {
+    if (source.width <= max_size && source.height <= max_size) return source;
+    const int factor = std::max(1, std::max(source.width, source.height) / max_size);
+    lolview::TexImage result;
+    result.width = std::max(1, source.width / factor);
+    result.height = std::max(1, source.height / factor);
+    result.format = "RGBA";
+    result.rgba.resize(static_cast<std::size_t>(result.width) * result.height * 4);
+    for (int y = 0; y < result.height; ++y) {
+        for (int x = 0; x < result.width; ++x) {
+            int r = 0, g = 0, b = 0, a = 0;
+            for (int dy = 0; dy < factor; ++dy) {
+                for (int dx = 0; dx < factor; ++dx) {
+                    const int sx = std::min(source.width - 1, x * factor + dx);
+                    const int sy = std::min(source.height - 1, y * factor + dy);
+                    const std::size_t index =
+                        (static_cast<std::size_t>(sy) * source.width + sx) * 4;
+                    r += source.rgba[index + 0];
+                    g += source.rgba[index + 1];
+                    b += source.rgba[index + 2];
+                    a += source.rgba[index + 3];
+                }
+            }
+            const int count = factor * factor;
+            const std::size_t out = (static_cast<std::size_t>(y) * result.width + x) * 4;
+            result.rgba[out + 0] = static_cast<std::uint8_t>(r / count);
+            result.rgba[out + 1] = static_cast<std::uint8_t>(g / count);
+            result.rgba[out + 2] = static_cast<std::uint8_t>(b / count);
+            result.rgba[out + 3] = static_cast<std::uint8_t>(a / count);
+        }
+    }
+    return result;
+}
+
 void apply_theme() {
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 6.0f;
@@ -957,6 +993,55 @@ int main(int argc, char** argv) {
                         piece.initial_yaw = piece.yaw;
                     }
                     std::printf("  pieces  : %zu editable meshes\n", map_pieces.size());
+
+                    // Resolve a texture for every distinct material, not just the
+                    // ones inside the old fountain-sized patch.
+                    if (const auto full_archive = find_archive(args.game_dir, "Map11.wad")) {
+                        std::set<std::string> materials;
+                        for (const auto& piece : map_pieces) materials.insert(piece.material);
+                        std::size_t resolved = 0;
+                        for (const auto& material : materials) {
+                            if (terrain_textures.count(material)) continue;
+                            for (const auto& path : terrain_texture_candidates(material)) {
+                                const auto found = full_archive->find(lolview::path_hash(path));
+                                if (!found) continue;
+                                try {
+                                    terrain_textures[material] = downscale_texture(
+                                        lolview::decode_tex(full_archive->read_chunk(
+                                            full_archive->entries()[*found])),
+                                        512);
+                                    terrain_texture_paths[material] = path;
+                                    ++resolved;
+                                } catch (const std::exception&) {
+                                }
+                                break;
+                            }
+                        }
+                        std::printf("  textures: %zu additional materials resolved\n", resolved);
+                    }
+
+                    // Alpha mode depends on the resolved textures, so decide it
+                    // after every material has been looked up.
+                    for (auto& piece : map_pieces) {
+                        std::string material_lower = piece.material;
+                        std::transform(material_lower.begin(), material_lower.end(),
+                                       material_lower.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        const auto path_it = terrain_texture_paths.find(piece.material);
+                        const bool has_texture = path_it != terrain_texture_paths.end();
+                        const std::string& texture_path =
+                            has_texture ? path_it->second : std::string();
+                        const bool cutout =
+                            has_texture &&
+                            (texture_path.find("1bitalpha") != std::string::npos ||
+                             material_lower.find("decal") != std::string::npos ||
+                             material_lower.find("leaf") != std::string::npos ||
+                             material_lower.find("foliage") != std::string::npos ||
+                             material_lower.find("grass") != std::string::npos);
+                        const bool blended = material_lower.find("water") != std::string::npos ||
+                                             material_lower.find("ocean") != std::string::npos;
+                        piece.alpha_mode = blended ? 2 : (cutout ? 1 : 0);
+                    }
                 } catch (const std::exception& error) {
                     std::fprintf(stderr, "warning: terrain parse failed: %s\n", error.what());
                 }
@@ -1000,6 +1085,16 @@ int main(int argc, char** argv) {
         if (!map_pieces.empty()) {
             std::printf("  cached  : %zu pieces, %zu textures\n", map_pieces.size(),
                         cached_textures);
+            std::set<std::string> missing;
+            for (const auto& piece : map_pieces) {
+                if (piece.texture_id < 0) missing.insert(piece.material);
+            }
+            std::printf("  untextured materials: %zu\n", missing.size());
+            int shown_missing = 0;
+            for (const auto& name : missing) {
+                if (shown_missing++ >= 30) break;
+                std::printf("    %s\n", name.c_str());
+            }
         }
 
         // ---- scene plumbing: save/load piece alignment + rotation ----
