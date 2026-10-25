@@ -44,6 +44,8 @@ struct Unit {
     float max_hp = 100.0f;
     int team = 0;
     bool dead = false;
+    std::vector<std::pair<float, float>> path;  // remaining waypoints
+    std::size_t path_index = 0;
 };
 
 struct World {
@@ -56,6 +58,7 @@ struct World {
     std::map<std::uint16_t, std::uint16_t> player_units;  // player id -> unit id
     // Walkable area from the editor (scripts/paths.txt). Empty = unrestricted.
     lolview::WalkArea area;
+    lolview::NavGrid grid;
 
     Unit* find(std::uint16_t id) {
         for (auto& unit : units) {
@@ -358,8 +361,10 @@ int main(int argc, char** argv) {
     }
 
     if (!paths_file.empty() && world.area.load(paths_file)) {
-        std::printf("server: %zu walkable polygon(s) from %s\n", world.area.polygons.size(),
-                    paths_file.c_str());
+        world.grid.build(world.area);
+        std::printf("server: %zu walkable / %zu obstacle polygon(s) from %s, nav grid %dx%d\n",
+                    world.area.polygons.size(), world.area.obstacles.size(),
+                    paths_file.c_str(), world.grid.width(), world.grid.height());
     }
 
     lolview::net::UdpSocket socket;
@@ -423,8 +428,22 @@ int main(int argc, char** argv) {
                                             intent->player_id);
                                 break;
                             }
-                            unit->x = intent->x;
-                            unit->z = intent->z;
+                            if (world.grid.valid()) {
+                                std::vector<std::pair<float, float>> route;
+                                if (!world.grid.find_path(unit->x, unit->z, intent->x,
+                                                          intent->z, route)) {
+                                    std::printf("server: player %u move rejected: no path\n",
+                                                intent->player_id);
+                                    break;
+                                }
+                                unit->path = route;
+                                unit->path_index = 0;
+                                std::printf("server: player %u path with %zu waypoints\n",
+                                            intent->player_id, route.size());
+                            } else {
+                                unit->x = intent->x;
+                                unit->z = intent->z;
+                            }
                             std::printf("server: player %u move -> (%.0f, %.0f)\n",
                                         intent->player_id, intent->x, intent->z);
                         } else {
@@ -439,6 +458,25 @@ int main(int argc, char** argv) {
         }
 
         // ---- simulate ----
+        const float walk_step = 380.0f * kTickSeconds;
+        for (auto& unit : world.units) {
+            while (unit.path_index < unit.path.size()) {
+                const auto [wx, wz] = unit.path[unit.path_index];
+                const float dx = wx - unit.x;
+                const float dz = wz - unit.z;
+                const float distance = std::sqrt(dx * dx + dz * dz);
+                if (distance <= walk_step) {
+                    unit.x = wx;
+                    unit.z = wz;
+                    ++unit.path_index;
+                } else {
+                    unit.x += dx / distance * walk_step;
+                    unit.z += dz / distance * walk_step;
+                    break;
+                }
+            }
+            if (unit.path_index >= unit.path.size()) unit.path.clear();
+        }
         run_tick(state, world, kTickSeconds);
         ++world.tick;
         world.elapsed += kTickSeconds;

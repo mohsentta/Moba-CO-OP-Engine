@@ -455,6 +455,30 @@ void test_walk_area() {
     CHECK(area.contains(300.0f, 300.0f));
     CHECK(!area.contains(150.0f, 150.0f));
 
+    // Obstacles subtract from the walkable set.
+    WalkArea blocked;
+    blocked.parse(
+        "path 1\npoint -100 -100\npoint 100 -100\npoint 100 100\npoint -100 100\nend\n"
+        "obstacle 1\npoint -20 -20\npoint 20 -20\npoint 20 20\npoint -20 20\nend\n");
+    CHECK_EQ(blocked.polygons.size(), std::size_t{1});
+    CHECK_EQ(blocked.obstacles.size(), std::size_t{1});
+    CHECK(blocked.contains(80.0f, 80.0f));
+    CHECK(!blocked.contains(0.0f, 0.0f));  // inside the obstacle
+
+    // The navigation grid routes around the obstacle, never through it.
+    NavGrid grid;
+    grid.build(blocked, 10.0f);
+    CHECK(grid.valid());
+    std::vector<std::pair<float, float>> route;
+    CHECK(grid.find_path(-90.0f, 0.0f, 90.0f, 0.0f, route));
+    CHECK(!route.empty());
+    for (const auto& point : route) {
+        CHECK(blocked.contains(point.first, point.second));
+    }
+    // A target outside the walkable area has no route.
+    std::vector<std::pair<float, float>> unreachable;
+    CHECK(!grid.find_path(-90.0f, 0.0f, 500.0f, 0.0f, unreachable));
+
     // Malformed blocks are skipped, not fatal.
     WalkArea broken;
     broken.parse("path 3\npoint 0 0\npoint 10 10\nend\n");

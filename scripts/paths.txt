@@ -1,6 +1,12 @@
 path 1
-point -400 -400
-point 400 -400
-point 400 400
-point -400 400
+point -800 -800
+point 800 -800
+point 800 800
+point -800 800
+end
+obstacle 1
+point -120 -120
+point 120 -120
+point 120 120
+point -120 120
 end

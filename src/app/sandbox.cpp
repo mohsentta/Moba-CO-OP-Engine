@@ -1527,7 +1527,10 @@ int main(int argc, char** argv) {
         // reject movement outside it.
         bool path_edit = false;
         std::vector<lolview::Vec3> walk_path;
+        std::vector<lolview::Vec3> blocked_path;
         bool walk_path_closed = false;
+        bool blocked_path_closed = false;
+        bool obstacle_mode = false;  // Tab: draw blocked (red) polygons
         std::string walk_path_file = "scripts/paths.txt";
 
         if (args.start_free_camera) {
@@ -1953,34 +1956,60 @@ int main(int argc, char** argv) {
                         case SDL_SCANCODE_Z:
                             if ((SDL_GetModState() & SDL_KMOD_CTRL) != 0) undo_last();
                             break;
+                        case SDL_SCANCODE_TAB:
+                            if (path_edit) {
+                                obstacle_mode = !obstacle_mode;
+                                std::printf("  path    : drawing %s\n",
+                                            obstacle_mode ? "obstacles (red)"
+                                                          : "walkable (cyan)");
+                            }
+                            break;
                         case SDL_SCANCODE_BACKSPACE:
-                            if (path_edit && !walk_path.empty()) {
-                                walk_path.pop_back();
-                                walk_path_closed = false;
-                                std::printf("  path    : %zu points\n", walk_path.size());
+                            if (path_edit) {
+                                auto& target = obstacle_mode ? blocked_path : walk_path;
+                                if (!target.empty()) {
+                                    target.pop_back();
+                                    (obstacle_mode ? blocked_path_closed : walk_path_closed) =
+                                        false;
+                                    std::printf("  path    : %zu points\n", target.size());
+                                }
                             }
                             break;
                         case SDL_SCANCODE_RETURN:
-                            if (path_edit && walk_path.size() >= 3) {
-                                walk_path_closed = true;
-                                std::printf("  path    : closed with %zu points\n",
-                                            walk_path.size());
+                            if (path_edit) {
+                                if (obstacle_mode && blocked_path.size() >= 3) {
+                                    blocked_path_closed = true;
+                                    std::printf("  path    : obstacle closed with %zu points\n",
+                                                blocked_path.size());
+                                } else if (!obstacle_mode && walk_path.size() >= 3) {
+                                    walk_path_closed = true;
+                                    std::printf("  path    : walkable closed with %zu points\n",
+                                                walk_path.size());
+                                }
                             }
                             break;
                         case SDL_SCANCODE_F5: {
-                            if (!walk_path.empty()) {
+                            if (!walk_path.empty() || !blocked_path.empty()) {
                                 std::ofstream out(walk_path_file, std::ios::trunc);
                                 if (out) {
-                                    out << "path 1\n";
-                                    for (const auto& point : walk_path) {
-                                        // Saved in spawn-relative space: that is
-                                        // the space intents and the host share.
-                                        out << "point " << (point.x - spawn.x) << " "
-                                            << (point.z - spawn.z) << "\n";
-                                    }
-                                    out << "end\n";
-                                    std::printf("  path    : saved %zu points to %s\n",
-                                                walk_path.size(), walk_path_file.c_str());
+                                    // Saved in spawn-relative space: that is the
+                                    // space intents and the host share.
+                                    const auto write_block = [&](const char* kind,
+                                                                 const std::vector<lolview::Vec3>& points) {
+                                        if (points.size() < 3) return;
+                                        out << kind << " 1\n";
+                                        for (const auto& point : points) {
+                                            out << "point " << (point.x - spawn.x) << " "
+                                                << (point.z - spawn.z) << "\n";
+                                        }
+                                        out << "end\n";
+                                    };
+                                    write_block("path", walk_path);
+                                    write_block("obstacle", blocked_path);
+                                    std::printf(
+                                        "  path    : saved %zu walkable, %zu obstacle points to %s\n",
+                                        walk_path.size(), blocked_path.size(),
+                                        walk_path_file.c_str());
                                 } else {
                                     std::printf("  path    : cannot write %s\n",
                                                 walk_path_file.c_str());
@@ -2071,7 +2100,7 @@ int main(int argc, char** argv) {
             // ---- camera yaw is stepped from key events (45 degrees) ----
             // ---- movement ----
             bool moving = false;
-            if (has_move_target && attack_hold <= 0.0f) {
+            if (has_move_target && attack_hold <= 0.0f && !connected) {
                 lolview::Vec3 delta = move_target - champion_position;
                 delta.y = 0.0f;
                 const float distance = lolview::length(delta);
@@ -2353,6 +2382,13 @@ int main(int argc, char** argv) {
                         net_target = remote.id;
                     }
                 }
+                // The host owns movement: follow the position it reports for us.
+                for (const auto& remote : remote_units) {
+                    if (remote.id != own_unit) continue;
+                    champion_position = lolview::Vec3{remote.x, spawn.y, remote.z};
+                    break;
+                }
+
                 // Headless verification: attack the nearest enemy on a timer.
                 if (args.auto_attack > 0.0f && net_target != 0xffff &&
                     elapsed - last_auto_attack >= args.auto_attack) {
@@ -2497,7 +2533,8 @@ int main(int argc, char** argv) {
 
             // Walkable-path editing: left click places a vertex on the ground.
             if (path_edit && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-                !ImGui::GetIO().WantCaptureMouse && !walk_path_closed) {
+                !ImGui::GetIO().WantCaptureMouse &&
+                !(obstacle_mode ? blocked_path_closed : walk_path_closed)) {
                 float mouse_x = 0.0f, mouse_y = 0.0f;
                 SDL_GetMouseState(&mouse_x, &mouse_y);
                 lolview::Vec3 origin, direction;
@@ -2510,9 +2547,11 @@ int main(int argc, char** argv) {
                 if (std::fabs(direction.y) > 1e-5f) {
                     const float t = -origin.y / direction.y;
                     if (t >= 0.0f) {
-                        walk_path.push_back(origin + direction * t);
-                        std::printf("  path    : vertex %zu at (%.0f, %.0f)\n",
-                                    walk_path.size(), walk_path.back().x, walk_path.back().z);
+                        auto& target = obstacle_mode ? blocked_path : walk_path;
+                        target.push_back(origin + direction * t);
+                        std::printf("  path    : %s vertex %zu at (%.0f, %.0f)\n",
+                                    obstacle_mode ? "obstacle" : "walkable", target.size(),
+                                    target.back().x, target.back().z);
                     }
                 }
             }
@@ -2550,6 +2589,28 @@ int main(int argc, char** argv) {
             }
 
             ImDrawList* draw = ImGui::GetBackgroundDrawList();
+            // Obstacles are drawn in red on top of the walkable outline.
+            if (path_edit && !blocked_path.empty()) {
+                for (std::size_t i = 0; i + 1 < blocked_path.size(); ++i) {
+                    float ax = 0, ay = 0, bx = 0, by = 0;
+                    if (!project_to_screen(view, proj, blocked_path[i], w, h, ax, ay)) continue;
+                    if (!project_to_screen(view, proj, blocked_path[i + 1], w, h, bx, by)) continue;
+                    draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), IM_COL32(240, 80, 80, 255), 3.0f);
+                }
+                if (blocked_path_closed && blocked_path.size() >= 3) {
+                    float ax = 0, ay = 0, bx = 0, by = 0;
+                    if (project_to_screen(view, proj, blocked_path.back(), w, h, ax, ay) &&
+                        project_to_screen(view, proj, blocked_path.front(), w, h, bx, by)) {
+                        draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), IM_COL32(240, 80, 80, 255),
+                                      3.0f);
+                    }
+                }
+                for (const auto& point : blocked_path) {
+                    float sx = 0, sy = 0;
+                    if (!project_to_screen(view, proj, point, w, h, sx, sy)) continue;
+                    draw->AddCircleFilled(ImVec2(sx, sy), 5.0f, IM_COL32(255, 170, 170, 240));
+                }
+            }
             // Walkable polygon overlay (F3 editor).
             if (path_edit && !walk_path.empty()) {
                 for (std::size_t i = 0; i + 1 < walk_path.size(); ++i) {
@@ -2688,7 +2749,7 @@ int main(int argc, char** argv) {
             // (selection highlight is drawn as a red wireframe in the 3D pass)
 
             // move-target marker
-            if (has_move_target && attack_hold <= 0.0f) {
+            if (has_move_target && attack_hold <= 0.0f && !connected) {
                 float marker_x = 0.0f, marker_y = 0.0f;
                 if (project_to_screen(view, proj, move_target, w, h, marker_x, marker_y)) {
                     draw->AddCircle(ImVec2(marker_x, marker_y), 12.0f,
