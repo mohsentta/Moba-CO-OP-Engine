@@ -22,17 +22,26 @@ local WAVE = {
 }
 
 local minions = {}
-for _, spec in ipairs(WAVE) do
-  local id = world.spawn({
-    model = "minion",
-    hp = spec.hp,
-    x = spec.x,
-    z = spec.z,
-    team = 1,
-  })
-  minions[#minions + 1] = id
+local wave_index = 0
+local next_wave_at = 0
+
+local function spawn_wave()
+  wave_index = wave_index + 1
+  minions = {}
+  for _, spec in ipairs(WAVE) do
+    local id = world.spawn({
+      model = "minion",
+      hp = spec.hp,
+      x = spec.x,
+      z = spec.z,
+      team = 1,
+    })
+    minions[#minions + 1] = id
+  end
+  world.log(string.format("wave %d: %d minions", wave_index, #minions))
 end
-world.log(string.format("spawned %d minions", #minions))
+
+spawn_wave()
 
 local last_attack = {}
 local spell_ready_at = {}
@@ -100,10 +109,20 @@ end)
 
 -- The wave advances toward the player spawn (z = 0) until it arrives.
 world.on_tick(function(dt)
+  local alive = 0
   for _, id in ipairs(minions) do
     local unit = world.unit(id)
-    if unit and unit.hp > 0 and unit.z > 0 then
-      world.move(id, unit.x, math.max(0, unit.z - 120 * dt))
+    if unit and unit.hp > 0 then
+      alive = alive + 1
+      if unit.z > 0 then
+        world.move(id, unit.x, math.max(0, unit.z - 120 * dt))
+      end
     end
+  end
+
+  -- Keep the range populated: a new wave shortly after the last one dies.
+  if alive == 0 and world.time() >= next_wave_at then
+    next_wave_at = world.time() + 4
+    spawn_wave()
   end
 end)

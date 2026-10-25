@@ -186,6 +186,32 @@ scripts/           maintenance helpers (not part of the build)
 `reference/` and `docs/research/` are source material written against the
 formats; they contain no game data.
 
+## Networked co-op
+
+The game host owns the world; the game mode is a Lua script. Clients render what
+the server tells them and send intents only.
+
+```powershell
+# host (Lua mode: waves, damage, cooldowns)
+.\build\lolview_server.exe --script server\main.lua --port 27015
+
+# first client
+.\build\lolview_sandbox.exe --game-dir "C:\Riot Games\League of Legends" `
+    --champion Jinx --archive Jinx.wad --map --join 127.0.0.1:27015
+
+# second client (same session, same minions)
+.\build\lolview_sandbox.exe --game-dir "C:\Riot Games\League of Legends" `
+    --champion Ahri --map --join 127.0.0.1:27015
+```
+
+Protocol (`include/lolview/net.hpp`): `HELLO` (name, version, content hash) ->
+`WELCOME` (player id, tick, model table) -> `INTENT` (move/attack/cast, slot,
+aim, target) -> `SNAPSHOT` (tick + units). 20 Hz snapshots, 30 Hz simulation.
+
+The mode in `server/main.lua` owns the rules: waves every few seconds, auto
+attacks at 45 damage on a 0.8 s cooldown, spells with per-slot cooldowns and
+area damage, and dead units removed from the world.
+
 ## Roadmap
 
 **End goal:** a co-op engine that can rebuild *old* League of Legends co-op modes

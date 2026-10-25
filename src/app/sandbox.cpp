@@ -636,6 +636,7 @@ void draw_bar(ImDrawList* draw, ImVec2 top_left, ImVec2 size, float fraction, Im
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     Args args;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
