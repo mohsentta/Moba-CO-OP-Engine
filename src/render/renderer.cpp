@@ -385,6 +385,10 @@ void Renderer::draw_scene(const Skn& mesh, const TexImage* texture,
     if (ranges.empty()) {
         ranges.push_back(DrawRange{0, static_cast<std::uint32_t>(indices.size()), palette[0]});
     }
+    // A textured mesh keeps its own colours; the palette is only a stand-in.
+    if (texture != nullptr && texture->width > 0 && !texture->rgba.empty()) {
+        for (auto& range : ranges) range.color = Vec3{1.0f, 1.0f, 1.0f};
+    }
 
     unsigned vao = 0;
     unsigned vbo = 0;

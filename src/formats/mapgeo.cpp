@@ -304,7 +304,7 @@ MapgeoAsset load_mapgeo(std::span<const std::uint8_t> bytes) {
                     vertex.nx = normal.x;
                     vertex.ny = normal.y;
                     vertex.nz = normal.z;
-                } else if (element.name == 8 && element.format == 1) {
+                } else if ((element.name == 7 || element.name == 8) && element.format == 1) {
                     const Float2 uv = read_vec2(base + offset);
                     vertex.u = uv.x;
                     vertex.v = uv.y;

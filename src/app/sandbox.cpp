@@ -64,8 +64,16 @@ struct LeagueCamera {
     }
 };
 
-struct ActiveEffect {
-    lolview::EffectKind kind = lolview::EffectKind::None;
+struct TerrainGroup {
+    std::string material;
+    std::vector<lolview::SknVertex> vertices;
+    std::vector<std::uint16_t> indices;
+    lolview::Skn mesh;
+    lolview::TexImage texture;
+    bool has_texture = false;
+};
+
+struct ActiveEffect {    lolview::EffectKind kind = lolview::EffectKind::None;
     float age = 0.0f;
     lolview::Vec3 origin{};
     lolview::Vec3 direction{0.0f, 0.0f, 1.0f};
@@ -141,6 +149,66 @@ std::optional<std::vector<std::uint8_t>> resolve_chunk_hash(const std::string& g
     return std::nullopt;
 }
 
+std::shared_ptr<lolview::Wad> find_archive(const std::string& game_dir,
+                                           const std::string& filter) {
+    lolview::AssetSource source(game_dir);
+    for (const auto& path : source.archives()) {
+        if (path.string().find(filter) != std::string::npos) return open_archive(path.string());
+    }
+    return nullptr;
+}
+
+// Map materials name a kitpiece (e.g. Ground_E2_ChaosBase_A_MAT); its texture is
+// a sibling under <root>/textures/<name>.tex. Variants and kit prefixes make the
+// mapping irregular, so several candidates are tried in order.
+std::vector<std::string> terrain_texture_candidates(const std::string& material) {
+    std::string path = material;
+    std::string lowered = path;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    const std::size_t marker = lowered.find("/materials/");
+    if (marker == std::string::npos) return {};
+    const std::string root = lowered.substr(0, marker);
+    std::string tail = lowered.substr(marker + 11);  // after "/materials/"
+    const std::size_t slash = tail.rfind('/');
+    if (slash != std::string::npos) tail = tail.substr(slash + 1);
+    if (tail.size() > 4 && tail.compare(tail.size() - 4, 4, "_mat") == 0) {
+        tail.resize(tail.size() - 4);
+    }
+
+    std::string kit;
+    const std::size_t kit_slash = root.rfind('/');
+    if (kit_slash != std::string::npos) kit = root.substr(kit_slash + 1) + "_";
+
+    std::vector<std::string> names;
+    const auto add_variants = [&](const std::string& base) {
+        if (base.empty()) return;
+        names.push_back(base);
+        names.push_back(base + "_1bitalpha");
+        // Variant letter: dragonwing_d -> dragonwing_a (and its alpha cutout).
+        if (base.size() > 2 && base[base.size() - 2] == '_') {
+            const std::string stem = base.substr(0, base.size() - 2);
+            names.push_back(stem);
+            names.push_back(stem + "_a");
+            names.push_back(stem + "_a_1bitalpha");
+            names.push_back(stem + "_1bitalpha");
+        }
+    };
+    add_variants(tail);
+    // Kit prefix: chemtech_dragonwing_a -> dragonwing_a.
+    if (!kit.empty() && tail.rfind(kit, 0) == 0) add_variants(tail.substr(kit.size()));
+
+    std::vector<std::string> candidates;
+    for (const auto& name : names) {
+        const std::string candidate = "assets/" + root + "/textures/" + name + ".tex";
+        if (std::find(candidates.begin(), candidates.end(), candidate) == candidates.end()) {
+            candidates.push_back(candidate);
+        }
+    }
+    return candidates;
+}
+
 std::string clip_path(const std::string& champion, const std::string& clip) {
     return "ASSETS/Characters/" + champion + "/Skins/Base/Animations/" + clip + ".anm";
 }
@@ -149,8 +217,7 @@ std::string skin_path(const std::string& champion, const char* suffix) {
     return "ASSETS/Characters/" + champion + "/Skins/Base/" + champion + "_Base" + suffix;
 }
 
-std::string icon_path(const std::string& champion, const char* ability) {
-    return "ASSETS/Characters/" + champion + "/HUD/Icons2D/Icons_" + champion + "_" +
+std::string icon_path(const std::string& champion, const char* ability) {    return "ASSETS/Characters/" + champion + "/HUD/Icons2D/Icons_" + champion + "_" +
            ability + ".dds";
 }
 
@@ -480,6 +547,7 @@ int main(int argc, char** argv) {
         // ---- Summoner's Rift terrain, straight out of the map archive ----
         lolview::Skn terrain_mesh;
         bool has_terrain = false;
+        std::vector<TerrainGroup> terrain_groups;
         lolview::Vec3 spawn{0.0f, 0.0f, 0.0f};
 
         if (args.load_map) {
@@ -642,6 +710,81 @@ int main(int argc, char** argv) {
                                 terrain_mesh.vertices().size(),
                                 terrain_mesh.indices().size() / 3, spawn.x, spawn.y,
                                 spawn.z);
+
+                    // ---- textured pass: one batch per material, each with its
+                    // own baked diffuse map ----
+                    std::size_t total = 0;
+                    std::vector<TerrainGroup> groups;
+                    for (std::size_t index : order) {
+                        const auto& mesh = asset.meshes[index];
+                        if (mesh.vertices.empty()) continue;
+                        if (total + mesh.vertices.size() > 62000) break;
+                        const std::string material = mesh.submeshes.empty()
+                                                         ? std::string("Terrain")
+                                                         : mesh.submeshes.front().material;
+                        TerrainGroup* group = nullptr;
+                        for (auto& candidate : groups) {
+                            if (candidate.material == material &&
+                                candidate.vertices.size() + mesh.vertices.size() <= 64000) {
+                                group = &candidate;
+                                break;
+                            }
+                        }
+                        if (group == nullptr) {
+                            groups.emplace_back();
+                            group = &groups.back();
+                            group->material = material;
+                        }
+                        const auto base = static_cast<std::uint16_t>(group->vertices.size());
+                        for (const auto& source : mesh.vertices) {
+                            lolview::SknVertex vertex{};
+                            vertex.position = {source.px, source.py, source.pz};
+                            vertex.normal = {source.nx, source.ny, source.nz};
+                            vertex.uv = {source.u, source.v};
+                            vertex.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+                            group->vertices.push_back(vertex);
+                        }
+                        for (std::uint16_t i : mesh.indices) group->indices.push_back(base + i);
+                        total += mesh.vertices.size();
+                        if (total > 60000) break;
+                    }
+
+                    std::size_t textured = 0;
+                    const auto map_archive = find_archive(args.game_dir, "Map11.wad");
+                    for (auto& group : groups) {
+                        std::vector<lolview::SknMaterial> materials(1);
+                        materials[0].name = group.material;
+                        materials[0].num_vertices =
+                            static_cast<std::uint32_t>(group.vertices.size());
+                        materials[0].num_indices =
+                            static_cast<std::uint32_t>(group.indices.size());
+                        auto vertices = std::move(group.vertices);
+                        auto indices = std::move(group.indices);
+                        group.mesh = lolview::Skn::from_parts(std::move(materials),
+                                                             std::move(vertices),
+                                                             std::move(indices));
+                        if (map_archive == nullptr) continue;
+                        for (const auto& path : terrain_texture_candidates(group.material)) {
+                            const auto found = map_archive->find(lolview::path_hash(path));
+                            if (!found) continue;
+                            try {
+                                group.texture = lolview::decode_tex(
+                                    map_archive->read_chunk(map_archive->entries()[*found]));
+                                group.has_texture = true;
+                                ++textured;
+                            } catch (const std::exception&) {
+                            }
+                            break;
+                        }
+                    }
+                    terrain_groups = std::move(groups);
+                    std::printf("  textures: %zu / %zu materials mapped\n", textured,
+                                terrain_groups.size());
+                    for (const auto& group : terrain_groups) {
+                        if (!group.has_texture) {
+                            std::printf("    untextured: %s\n", group.material.c_str());
+                        }
+                    }
                 } catch (const std::exception& error) {
                     std::fprintf(stderr, "warning: terrain parse failed: %s\n", error.what());
                 }
@@ -935,7 +1078,13 @@ int main(int argc, char** argv) {
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 1.0f, 8000.0f);
 
-            if (has_terrain) {
+            if (!terrain_groups.empty()) {
+                for (const auto& group : terrain_groups) {
+                    renderer.draw_scene(group.mesh, group.has_texture ? &group.texture : nullptr,
+                                        nullptr, nullptr, lolview::Mat4::identity(), view, proj,
+                                        w, h);
+                }
+            } else if (has_terrain) {
                 renderer.draw_scene(terrain_mesh, nullptr, nullptr, nullptr,
                                     lolview::Mat4::identity(), view, proj, w, h);
             } else {
