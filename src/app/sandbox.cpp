@@ -2001,14 +2001,21 @@ int main(int argc, char** argv) {
                             break;
                         case SDL_SCANCODE_RETURN:
                             if (path_edit) {
-                                if (obstacle_mode && blocked_path.size() >= 3) {
-                                    blocked_path_closed = true;
-                                    std::printf("  path    : obstacle closed with %zu points\n",
-                                                blocked_path.size());
-                                } else if (!obstacle_mode && walk_path.size() >= 3) {
-                                    walk_path_closed = true;
-                                    std::printf("  path    : walkable closed with %zu points\n",
-                                                walk_path.size());
+                                // Enter toggles between open and closed, so a
+                                // finished shape can always be edited again.
+                                bool& closed =
+                                    obstacle_mode ? blocked_path_closed : walk_path_closed;
+                                auto& points = obstacle_mode ? blocked_path : walk_path;
+                                if (closed) {
+                                    closed = false;
+                                    std::printf("  path    : %s polygon reopened (%zu points)\n",
+                                                obstacle_mode ? "obstacle" : "walkable",
+                                                points.size());
+                                } else if (points.size() >= 3) {
+                                    closed = true;
+                                    std::printf("  path    : %s closed with %zu points\n",
+                                                obstacle_mode ? "obstacle" : "walkable",
+                                                points.size());
                                 }
                             }
                             break;
@@ -2601,6 +2608,14 @@ int main(int argc, char** argv) {
                                         hit_obstacle ? "obstacle" : "walkable", hit);
                         } else {
                             auto& target = obstacle_mode ? blocked_path : walk_path;
+                            bool& closed = obstacle_mode ? blocked_path_closed : walk_path_closed;
+                            if (closed) {
+                                // A closed shape keeps accepting edits: the first
+                                // click reopens it so the new vertex extends it.
+                                closed = false;
+                                std::printf("  path    : reopened %s polygon for editing\n",
+                                            obstacle_mode ? "obstacle" : "walkable");
+                            }
                             target.push_back(origin + direction * t);
                             std::printf("  path    : %s vertex %zu at (%.0f, %.0f)\n",
                                         obstacle_mode ? "obstacle" : "walkable", target.size(),
@@ -2907,8 +2922,9 @@ int main(int argc, char** argv) {
                 ImGui::Separator();
                 ImGui::BulletText("Left click ground: add a vertex");
                 ImGui::BulletText("Left click a vertex: grab it, drag to move");
+                ImGui::BulletText("Click a closed shape: reopens it");
                 ImGui::BulletText("Backspace: delete the last vertex");
-                ImGui::BulletText("Enter: close the polygon");
+                ImGui::BulletText("Enter: close, or reopen a closed polygon");
                 ImGui::BulletText("F5: save scripts/paths.txt");
                 ImGui::BulletText("F3: leave the path editor");
                 ImGui::Separator();
