@@ -16,16 +16,39 @@ asset is resolved by path hash at runtime and decoded in memory.
 
 | Feature | State |
 |---|---|
-| Champion mesh, skeleton, colour map | 13,780 verts / 21,678 tris, 211 joints |
-| Animation (Idle1, Run, Spell1/2/4, attack1) | CPU pose + GPU skinning |
+| Champion mesh, skeleton, colour map | Ahri 13,780 verts / 211 joints; Jinx 9,998 verts / 88 joints |
+| Champion naming variants | candidate paths per asset (mesh, skeleton, texture, clips) |
+| Animation | uncompressed clips animate; `r3d2canm` clips parse but are not yet evaluated |
+| Weapon families | Jinx `minigun` / `rlauncher` clip sets, `Q` swaps the active set |
 | Ability casts with real VFX | Q/W/R from the game's VFX bin; E procedural |
-| League camera | 55° pitch, follow, wheel zoom, `Y` unlock |
+| League camera | 55° pitch, follow, wheel zoom, `Y` unlock, `-`/`+` 45° steps |
 | Movement | right-click order, `S` stop, Run/Idle switching |
-| HUD | real ability icons, cooldowns, health/mana, target bar |
-| Jungle pets | `durian_*` from Map11.wad, bind pose |
+| HUD | real ability icons (per-weapon Q art), cooldowns, health/mana, target bar |
+| Jungle pets | `durian_*` from Map11.wad |
+| Minions | melee minion mesh + texture from Map12.wad |
+| Scenario units | `scripts/scenario.txt`: `unit <model> <hp> <dx> <dz> [team]` |
 | Rift terrain | 586 pieces, 2.04 M verts / 910 k tris, 343 textures |
 | Transparency | cutout for foliage/decals, blended surfaces |
-| Map editor | per-piece move/rotate/scale, selection brackets, save/load |
+| Map editor (`F2`) | free-fly camera, searchable piece list, click-select, click-to-cycle, red wireframe highlight, move/rotate/scale, 200-step undo, save/load |
+| Picking | triangle-accurate ray test, `--pick-test` probe |
+
+## Stated goals and where they live
+
+The end goal is recreating the old co-op modes — **Doom Bots**, **Star Guardian
+Invasion**, **Odyssey Extraction** — playable co-op. Everything below is ordered
+so each step is usable on its own; see `README.md#roadmap` for the full
+milestones.
+
+| Goal | Milestone | Notes |
+|---|---|---|
+| Play every animation a champion ships | M1 | `r3d2canm` parser done; evaluator outstanding |
+| Pathfinding + walkable ground | M2 | navmesh/grid from map data, A*, collision, ground snap |
+| Spell casting (cast times, projectiles, damage) | M3 | data-driven spells, status effects, auto-attacks |
+| Minions, waves, AI | M4 | spawners, aggro, leash, lane waypoints |
+| Scriptable rules (Lua) | M5 | `spawn`, `on_tick`, `on_cast`, timers |
+| Network co-op | M6 | host-authoritative UDP, snapshots, asset agreement |
+| Mode framework (waves, objectives, modifiers, augments) | M7 | modifiers = Doom Bots, augments = Star Guardian / Odyssey |
+| Recreate the co-op modes | M8 | Star Guardian → Odyssey → Doom Bots |
 
 ## Verified numbers
 
