@@ -8,6 +8,7 @@
 // Nothing is shipped here; every asset is resolved by hash at runtime.
 
 #include <lolview/anm.hpp>
+#include <lolview/anm_compressed.hpp>
 #include <lolview/asset_source.hpp>
 #include <lolview/bin.hpp>
 #include <lolview/mapgeo.hpp>
@@ -114,6 +115,8 @@ struct MapPiece {
     lolview::Vec3 bounds_min{};
     lolview::Vec3 bounds_max{};
 };
+
+std::vector<lolview::CompressedAnimation> g_compressed_clips;
 
 struct TerrainGroup {
     std::string material;
@@ -760,6 +763,7 @@ int main(int argc, char** argv) {
             std::transform(champion_lower.begin(), champion_lower.end(),
                            champion_lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::vector<lolview::CompressedAnimation>& compressed_clips = g_compressed_clips;
             const auto add_clip = [&](const std::string& key, const std::string& stem) {
                 const auto bytes = resolve_first({base_dir + "Animations/" + stem + ".anm",
                                                   base_dir + "animations/" + stem + ".anm"});
@@ -767,6 +771,20 @@ int main(int argc, char** argv) {
                 try {
                     clips[key].push_back(lolview::Anm::parse(*bytes));
                 } catch (const std::exception& error) {
+                    if (lolview::is_compressed_animation(*bytes)) {
+                        try {
+                            const auto anim = lolview::parse_compressed_animation(*bytes);
+                            std::printf(
+                                "  compressed: %-28s %3u joints %5u frames %5.2fs\n",
+                                stem.c_str(), anim.joint_count, anim.frame_count,
+                                anim.duration);
+                            compressed_clips.push_back(anim);
+                        } catch (const std::exception& nested) {
+                            std::fprintf(stderr, "warning: %s.anm compressed parse failed: %s\n",
+                                         stem.c_str(), nested.what());
+                        }
+                        return;
+                    }
                     std::fprintf(stderr, "warning: %s.anm failed to parse: %s\n", stem.c_str(),
                                  error.what());
                 }

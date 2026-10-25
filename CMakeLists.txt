@@ -110,6 +110,7 @@ add_library(lolview_core STATIC
     src/formats/ground.cpp
     src/formats/mapgeo.cpp
     src/formats/anm.cpp
+    src/formats/anm_compressed.cpp
     src/formats/pose.cpp
     src/formats/skl.cpp
     src/formats/skn.cpp
