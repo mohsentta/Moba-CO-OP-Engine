@@ -68,9 +68,13 @@ public:
     // Uploads an image and returns a GL texture handle (used by the HUD).
     unsigned upload_texture(const TexImage& image);
 
+    // Alpha handling for draw_scene: 0 opaque, 1 cutout (alpha test), 2 blended.
+    void set_alpha_mode(int mode) noexcept { alpha_mode_ = mode; }
+
 private:
     struct Impl;
     Impl* impl_ = nullptr;
+    int alpha_mode_ = 0;
 };
 
 }  // namespace lolview

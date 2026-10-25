@@ -113,6 +113,7 @@ in vec3 v_position;
 uniform vec3 u_color;
 uniform int u_use_texture;
 uniform sampler2D u_texture;
+uniform int u_alpha_mode;
 
 out vec4 frag_color;
 
@@ -124,12 +125,19 @@ void main() {
     float fill_light = max(dot(n, fill), 0.0) * 0.35;
 
     vec3 base = u_color;
+    float alpha = 1.0;
     if (u_use_texture != 0) {
-        base = texture(u_texture, v_uv).rgb;
+        vec4 sampled = texture(u_texture, v_uv);
+        base = sampled.rgb;
+        alpha = sampled.a;
     }
+    // Cutout foliage and decals mask with their alpha channel; blended surfaces
+    // (water) fade instead.
+    if (u_alpha_mode == 1 && alpha < 0.5) discard;
+    if (u_alpha_mode == 2) alpha = max(alpha, 0.25);
 
     vec3 lit = base * (0.28 + 0.72 * key_light + fill_light);
-    frag_color = vec4(lit, 1.0);
+    frag_color = vec4(lit, u_alpha_mode == 0 ? 1.0 : alpha);
 }
 )";
 
@@ -418,6 +426,16 @@ void Renderer::draw_scene(const Skn& mesh, const TexImage* texture,
     const int loc_mvp = gl::GetUniformLocation(impl_->program, "u_mvp");
     const int loc_color = gl::GetUniformLocation(impl_->program, "u_color");
     const int loc_use_texture = gl::GetUniformLocation(impl_->program, "u_use_texture");
+    const int loc_alpha_mode = gl::GetUniformLocation(impl_->program, "u_alpha_mode");
+    gl::Uniform1i(loc_alpha_mode, alpha_mode_);
+    if (alpha_mode_ == 2) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+    } else {
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+    }
     gl::UniformMatrix4fv(loc_mvp, 1, 0, mvp.data());
     gl::Uniform1i(loc_use_texture, 0);
 
@@ -466,6 +484,10 @@ void Renderer::draw_scene(const Skn& mesh, const TexImage* texture,
     }
 
     if (texture_name != 0) glDeleteTextures(1, &texture_name);
+    if (alpha_mode_ == 2) {
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+    }
     gl::DeleteBuffers(1, &ebo);
     gl::DeleteBuffers(1, &vbo);
     gl::DeleteVertexArrays(1, &vao);

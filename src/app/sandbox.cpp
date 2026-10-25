@@ -66,11 +66,13 @@ struct LeagueCamera {
 
 struct TerrainGroup {
     std::string material;
+    std::string texture_path;
     std::vector<lolview::SknVertex> vertices;
     std::vector<std::uint16_t> indices;
     lolview::Skn mesh;
     lolview::TexImage texture;
     bool has_texture = false;
+    int alpha_mode = 0;  // 0 opaque, 1 cutout, 2 blended
 };
 
 struct ActiveEffect {    lolview::EffectKind kind = lolview::EffectKind::None;
@@ -771,11 +773,29 @@ int main(int argc, char** argv) {
                                 group.texture = lolview::decode_tex(
                                     map_archive->read_chunk(map_archive->entries()[*found]));
                                 group.has_texture = true;
+                                group.texture_path = path;
                                 ++textured;
                             } catch (const std::exception&) {
                             }
                             break;
                         }
+
+                        // Foliage and decals mask with alpha; water fades.
+                        std::string material_lower = group.material;
+                        std::transform(material_lower.begin(), material_lower.end(),
+                                       material_lower.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        const bool cutout =
+                            group.texture_path.find("1bitalpha") != std::string::npos ||
+                            material_lower.find("decal") != std::string::npos ||
+                            material_lower.find("leaf") != std::string::npos ||
+                            material_lower.find("foliage") != std::string::npos ||
+                            material_lower.find("grass") != std::string::npos;
+                        const bool blended = material_lower.find("water") != std::string::npos ||
+                                             material_lower.find("ocean") != std::string::npos ||
+                                             material_lower.find("shadow") != std::string::npos ||
+                                             material_lower.find("mask") != std::string::npos;
+                        group.alpha_mode = blended ? 2 : (cutout ? 1 : 0);
                     }
                     terrain_groups = std::move(groups);
                     std::printf("  textures: %zu / %zu materials mapped\n", textured,
@@ -1079,11 +1099,16 @@ int main(int argc, char** argv) {
                 1.0f, 8000.0f);
 
             if (!terrain_groups.empty()) {
-                for (const auto& group : terrain_groups) {
-                    renderer.draw_scene(group.mesh, group.has_texture ? &group.texture : nullptr,
-                                        nullptr, nullptr, lolview::Mat4::identity(), view, proj,
-                                        w, h);
+                for (int mode = 0; mode <= 2; ++mode) {
+                    for (const auto& group : terrain_groups) {
+                        if (group.alpha_mode != mode) continue;
+                        renderer.set_alpha_mode(mode);
+                        renderer.draw_scene(group.mesh,
+                                            group.has_texture ? &group.texture : nullptr, nullptr,
+                                            nullptr, lolview::Mat4::identity(), view, proj, w, h);
+                    }
                 }
+                renderer.set_alpha_mode(0);
             } else if (has_terrain) {
                 renderer.draw_scene(terrain_mesh, nullptr, nullptr, nullptr,
                                     lolview::Mat4::identity(), view, proj, w, h);
