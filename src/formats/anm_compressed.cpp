@@ -43,12 +43,49 @@ public:
         return value;
     }
     void seek(std::size_t position) { offset_ = position; }
-    std::size_t position() const noexcept { return offset_; }
 
 private:
     std::span<const std::uint8_t> data_;
     std::size_t offset_ = 0;
 };
+
+struct QuatL {
+    float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f;
+};
+
+QuatL decode_quat(const std::uint16_t value[3]) {
+    float xyzw[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    decompress_quat(value, xyzw);
+    return QuatL{xyzw[0], xyzw[1], xyzw[2], xyzw[3]};
+}
+
+float dot(const QuatL& a, const QuatL& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+// Catmull-Rom weights, matching the reference implementation.
+void catmull_weights(float amount, float ease_in, float ease_out, float out[4]) {
+    out[0] = (((2.0f - amount) * amount) - 1.0f) * (amount * ease_in);
+    out[1] = ((((2.0f - ease_out) * amount) + (ease_out - 3.0f)) * (amount * amount)) + 1.0f;
+    out[2] = ((((3.0f - ease_in * 2.0f) + ((ease_in - 2.0f) * amount)) * amount) + ease_in) *
+             amount;
+    out[3] = ((amount - 1.0f) * amount) * (amount * ease_out);
+}
+
+// Index of the last key at or before `time`; zero when the time precedes them.
+std::size_t last_key_at(const std::vector<CompressedTrackKey>& track, std::uint16_t time) {
+    std::size_t low = 0;
+    std::size_t high = track.size();
+    while (low < high) {
+        const std::size_t mid = low + (high - low) / 2;
+        if (track[mid].time <= time) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return low == 0 ? 0 : low - 1;
+}
 
 }  // namespace
 
@@ -66,9 +103,9 @@ void decompress_quat(const std::uint16_t value[3], float out_xyzw[4]) {
     const float one_over_sqrt2 = kSqrt2 * 0.5f;
     const float step = kSqrt2 / 32767.0f;
 
-    float a = static_cast<float>((bits >> 30) & 32767u) * step - one_over_sqrt2;
-    float b = static_cast<float>((bits >> 15) & 32767u) * step - one_over_sqrt2;
-    float c = static_cast<float>(bits & 32767u) * step - one_over_sqrt2;
+    const float a = static_cast<float>((bits >> 30) & 32767u) * step - one_over_sqrt2;
+    const float b = static_cast<float>((bits >> 15) & 32767u) * step - one_over_sqrt2;
+    const float c = static_cast<float>(bits & 32767u) * step - one_over_sqrt2;
     const float d = std::sqrt(std::max(0.0f, 1.0f - (a * a + b * b + c * c)));
 
     switch (missing) {
@@ -135,20 +172,29 @@ CompressedAnimation parse_compressed_animation(std::span<const std::uint8_t> byt
         for (std::uint16_t& value : frame.value) value = reader.u16();
     }
 
+    // Bucket keys per joint and transform. Playback binary-searches these, which
+    // is the stateless equivalent of the reference's cursor walk.
+    anim.tracks.assign(static_cast<std::size_t>(anim.joint_count) * 3, {});
+    for (const auto& frame : anim.frames) {
+        if (frame.joint >= anim.joint_count || frame.transform > 2) continue;
+        const std::size_t slot = static_cast<std::size_t>(frame.joint) * 3 + frame.transform;
+        anim.tracks[slot].push_back(
+            CompressedTrackKey{frame.time, {frame.value[0], frame.value[1], frame.value[2]}});
+    }
+    for (auto& track : anim.tracks) {
+        std::stable_sort(track.begin(), track.end(),
+                         [](const CompressedTrackKey& a, const CompressedTrackKey& b) {
+                             return a.time < b.time;
+                         });
+    }
+
     anim.jump_frame_size = anim.frame_count < 0x10001u ? 24u : 48u;
     const std::size_t jump_bytes = static_cast<std::size_t>(anim.jump_cache_count) *
                                    anim.joint_count * anim.jump_frame_size;
-    reader.seek(static_cast<std::size_t>(jump_off) + kBias);
     anim.jump_caches.resize(jump_bytes);
-    for (std::uint8_t& byte : anim.jump_caches) {
-        reader.need(1);
-        // Reader has no byte accessor; reuse u16 by seeking backwards is overkill.
-        byte = 0;
-    }
-    // Re-read the blob directly from the span (byte access).
-    if (static_cast<std::size_t>(jump_off) + kBias + jump_bytes <= bytes.size()) {
-        std::memcpy(anim.jump_caches.data(),
-                    bytes.data() + static_cast<std::size_t>(jump_off) + kBias, jump_bytes);
+    const std::size_t jump_start = static_cast<std::size_t>(jump_off) + kBias;
+    if (jump_start + jump_bytes <= bytes.size()) {
+        std::memcpy(anim.jump_caches.data(), bytes.data() + jump_start, jump_bytes);
     }
     return anim;
 }
@@ -156,151 +202,121 @@ CompressedAnimation parse_compressed_animation(std::span<const std::uint8_t> byt
 std::map<std::uint32_t, TrsKey> evaluate_compressed(const CompressedAnimation& anim,
                                                     float time) {
     std::map<std::uint32_t, TrsKey> out;
-    if (anim.duration <= 0.0f || anim.jump_cache_count == 0 || anim.joint_count == 0 ||
-        anim.frames.empty() || anim.jump_caches.empty()) {
-        return out;
-    }
+    if (anim.duration <= 0.0f || anim.joint_count == 0 || anim.tracks.empty()) return out;
 
     const float clamped = std::min(std::max(time, 0.0f), anim.duration);
-    const float ratio = clamped / anim.duration;
-    std::uint32_t cache_id = static_cast<std::uint32_t>(
-        static_cast<float>(anim.jump_cache_count) * ratio);
-    if (cache_id >= anim.jump_cache_count) cache_id = anim.jump_cache_count - 1;
-    const auto compressed_time =
-        static_cast<std::uint16_t>(std::min(65535.0f, ratio * 65535.0f));
+    const auto compressed_time = static_cast<std::uint16_t>(
+        std::min(65535.0f, (clamped / anim.duration) * 65535.0f));
+    const bool parametrized = anim.parametrized();
 
-    const bool keys16 = anim.frame_count < 0x10001u;
-    const std::size_t record_size = keys16 ? 24u : 48u;
+    for (std::uint32_t joint = 0; joint < anim.joint_count; ++joint) {
+        TrsKey key;
 
-    const auto frame_time = [&](std::size_t index) {
-        return anim.frames[index].time;
-    };
+        // ---- rotation ----
+        const auto& rotation = anim.tracks[static_cast<std::size_t>(joint) * 3 + 0];
+        if (!rotation.empty()) {
+            const std::size_t index = last_key_at(rotation, compressed_time);
+            const std::size_t first = index == 0 ? 0 : index - 1;
+            const std::size_t window[4] = {
+                first,
+                std::min(first + 1, rotation.size() - 1),
+                std::min(first + 2, rotation.size() - 1),
+                std::min(first + 3, rotation.size() - 1),
+            };
 
-    // Four control points -> interpolated sample, for one transform of a joint.
-    struct Sample {
-        bool rotation = false;
-        bool valid = false;
-        float value[3] = {0.0f, 0.0f, 0.0f};
-        float quat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    };
-
-    const auto sample = [&](const std::size_t indices[4], bool rotation, bool parametrized,
-                            const float* minimum, const float* maximum) -> Sample {
-        Sample result;
-        result.rotation = rotation;
-        for (int i = 0; i < 4; ++i) {
-            if (indices[i] >= anim.frames.size()) return result;
-        }
-
-        float amount = 0.0f, ease_in = 0.5f, ease_out = 0.5f;
-        if (parametrized) {
-            const float t0 = frame_time(indices[0]);
-            const float t1 = frame_time(indices[1]);
-            const float t2 = frame_time(indices[2]);
-            const float t3 = frame_time(indices[3]);
-            const float span = std::max(1e-6f, t2 - t1);
-            amount = (static_cast<float>(compressed_time) - t1) / span;
-            ease_in = span / std::max(1e-6f, t2 - t0);
-            ease_out = span / std::max(1e-6f, t3 - t1);
-        } else {
-            const int span = static_cast<int>(anim.frames[indices[2]].time) -
-                             static_cast<int>(anim.frames[indices[1]].time);
-            if (span <= 0) {
-                const auto& frame = anim.frames[indices[1]];
-                if (rotation) {
-                    decompress_quat(frame.value, result.quat);
-                } else {
-                    for (int c = 0; c < 3; ++c) {
-                        result.value[c] =
-                            (static_cast<float>(frame.value[c]) / 65535.0f) *
-                                (maximum[c] - minimum[c]) +
-                            minimum[c];
-                    }
+            QuatL q[4];
+            for (int i = 0; i < 4; ++i) q[i] = decode_quat(rotation[window[i]].value);
+            // Shortest-path consistency, as the reference does when seeding.
+            for (int i = 1; i < 4; ++i) {
+                if (dot(q[i], q[0]) < 0.0f) {
+                    q[i].x = -q[i].x;
+                    q[i].y = -q[i].y;
+                    q[i].z = -q[i].z;
+                    q[i].w = -q[i].w;
                 }
-                result.valid = true;
-                return result;
             }
-            amount = (static_cast<float>(compressed_time) -
-                      static_cast<float>(anim.frames[indices[1]].time)) /
-                     static_cast<float>(span);
-        }
+            const float qv[4][4] = {{q[0].x, q[0].y, q[0].z, q[0].w},
+                                    {q[1].x, q[1].y, q[1].z, q[1].w},
+                                    {q[2].x, q[2].y, q[2].z, q[2].w},
+                                    {q[3].x, q[3].y, q[3].z, q[3].w}};
 
-        float w[4];
-        w[0] = (((2.0f - amount) * amount) - 1.0f) * (amount * ease_in);
-        w[1] = ((((2.0f - ease_out) * amount) + (ease_out - 3.0f)) * (amount * amount)) + 1.0f;
-        w[2] = ((((3.0f - ease_in * 2.0f) + ((ease_in - 2.0f) * amount)) * amount) + ease_in) *
-               amount;
-        w[3] = ((amount - 1.0f) * amount) * (amount * ease_out);
+            float amount = 0.0f, ease_in = 0.5f, ease_out = 0.5f;
+            const float t1 = rotation[window[1]].time;
+            const float t2 = rotation[window[2]].time;
+            if (parametrized) {
+                const float t0 = rotation[window[0]].time;
+                const float t3 = rotation[window[3]].time;
+                const float span = std::max(1e-6f, t2 - t1);
+                amount = (static_cast<float>(compressed_time) - t1) / span;
+                ease_in = span / std::max(1e-6f, t2 - t0);
+                ease_out = span / std::max(1e-6f, t3 - t1);
+            } else if (t2 > t1) {
+                amount = (static_cast<float>(compressed_time) - t1) / (t2 - t1);
+            }
 
-        if (rotation) {
-            float q[4][4];
-            for (int i = 0; i < 4; ++i) decompress_quat(anim.frames[indices[i]].value, q[i]);
-            float sum[4] = {0, 0, 0, 0};
+            float w[4];
+            catmull_weights(amount, ease_in, ease_out, w);
+            float sum[4];
             for (int c = 0; c < 4; ++c) {
-                sum[c] = w[0] * q[0][c] + w[1] * q[1][c] + w[2] * q[2][c] + w[3] * q[3][c];
+                sum[c] = w[0] * qv[0][c] + w[1] * qv[1][c] + w[2] * qv[2][c] +
+                         w[3] * qv[3][c];
             }
             const float length = std::sqrt(sum[0] * sum[0] + sum[1] * sum[1] +
                                            sum[2] * sum[2] + sum[3] * sum[3]);
             const float inv = length > 1e-6f ? 1.0f / length : 0.0f;
-            for (int c = 0; c < 4; ++c) result.quat[c] = sum[c] * inv;
-        } else {
-            float v[4][3];
+            key.rotation = Quat{sum[0] * inv, sum[1] * inv, sum[2] * inv, sum[3] * inv};
+        }
+
+        // ---- translation and scale ----
+        for (int transform = 1; transform <= 2; ++transform) {
+            const auto& track = anim.tracks[static_cast<std::size_t>(joint) * 3 + transform];
+            if (track.empty()) continue;
+            const std::size_t index = last_key_at(track, compressed_time);
+            const std::size_t first = index == 0 ? 0 : index - 1;
+            const std::size_t window[4] = {
+                first,
+                std::min(first + 1, track.size() - 1),
+                std::min(first + 2, track.size() - 1),
+                std::min(first + 3, track.size() - 1),
+            };
+            const float* minimum = transform == 1 ? anim.translation_min : anim.scale_min;
+            const float* maximum = transform == 1 ? anim.translation_max : anim.scale_max;
+
+            float value[4][3];
             for (int i = 0; i < 4; ++i) {
                 for (int c = 0; c < 3; ++c) {
-                    v[i][c] = (static_cast<float>(anim.frames[indices[i]].value[c]) / 65535.0f) *
-                                  (maximum[c] - minimum[c]) +
-                              minimum[c];
+                    value[i][c] = (static_cast<float>(track[window[i]].value[c]) / 65535.0f) *
+                                      (maximum[c] - minimum[c]) +
+                                  minimum[c];
                 }
             }
+
+            float amount = 0.0f, ease_in = 0.5f, ease_out = 0.5f;
+            const float t1 = track[window[1]].time;
+            const float t2 = track[window[2]].time;
+            if (parametrized) {
+                const float t0 = track[window[0]].time;
+                const float t3 = track[window[3]].time;
+                const float span = std::max(1e-6f, t2 - t1);
+                amount = (static_cast<float>(compressed_time) - t1) / span;
+                ease_in = span / std::max(1e-6f, t2 - t0);
+                ease_out = span / std::max(1e-6f, t3 - t1);
+            } else if (t2 > t1) {
+                amount = (static_cast<float>(compressed_time) - t1) / (t2 - t1);
+            }
+
+            float w[4];
+            catmull_weights(amount, ease_in, ease_out, w);
+            float result[3];
             for (int c = 0; c < 3; ++c) {
-                result.value[c] = w[0] * v[0][c] + w[1] * v[1][c] + w[2] * v[2][c] +
-                                  w[3] * v[3][c];
+                result[c] = w[0] * value[0][c] + w[1] * value[1][c] + w[2] * value[2][c] +
+                            w[3] * value[3][c];
             }
-        }
-        result.valid = true;
-        return result;
-    };
-
-    const bool parametrized = anim.parametrized();
-    for (std::uint32_t joint = 0; joint < anim.joint_count; ++joint) {
-        const std::size_t record =
-            (static_cast<std::size_t>(cache_id) * anim.joint_count + joint) * record_size;
-        if (record + record_size > anim.jump_caches.size()) break;
-
-        std::size_t indices[12];
-        for (int i = 0; i < 12; ++i) {
-            if (keys16) {
-                const std::size_t at = record + static_cast<std::size_t>(i) * 2;
-                indices[i] = static_cast<std::size_t>(anim.jump_caches[at]) |
-                             (static_cast<std::size_t>(anim.jump_caches[at + 1]) << 8);
+            if (transform == 1) {
+                key.translation = Vec3{result[0], result[1], result[2]};
             } else {
-                const std::size_t at = record + static_cast<std::size_t>(i) * 4;
-                indices[i] = static_cast<std::size_t>(anim.jump_caches[at]) |
-                             (static_cast<std::size_t>(anim.jump_caches[at + 1]) << 8) |
-                             (static_cast<std::size_t>(anim.jump_caches[at + 2]) << 16) |
-                             (static_cast<std::size_t>(anim.jump_caches[at + 3]) << 24);
+                key.scale = Vec3{result[0], result[1], result[2]};
             }
-        }
-
-        TrsKey key;
-        const Sample rotation = sample(&indices[0], true, parametrized, nullptr, nullptr);
-        if (rotation.valid) {
-            key.rotation = Quat{rotation.quat[0], rotation.quat[1], rotation.quat[2],
-                                rotation.quat[3]};
-        }
-        const Sample translation =
-            sample(&indices[4], false, parametrized, anim.translation_min,
-                   anim.translation_max);
-        if (translation.valid) {
-            key.translation = Vec3{translation.value[0], translation.value[1],
-                                   translation.value[2]};
-        } else {
-            key.translation = Vec3{0.0f, 0.0f, 0.0f};
-        }
-        const Sample scale = sample(&indices[8], false, parametrized, anim.scale_min,
-                                    anim.scale_max);
-        if (scale.valid) {
-            key.scale = Vec3{scale.value[0], scale.value[1], scale.value[2]};
         }
 
         out[anim.joint_hashes[joint]] = key;

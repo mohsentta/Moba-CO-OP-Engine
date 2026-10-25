@@ -17,9 +17,15 @@ struct CompressedFrame {
     std::uint16_t value[3] = {0, 0, 0};
 };
 
-// League's "r3d2canm" container: keyframe-compressed animations. Frames are
-// shared per joint/transform and sampled through per-joint jump caches of four
-// control points, interpolated with Catmull-Rom.
+// One key of one transform channel, after bucketing.
+struct CompressedTrackKey {
+    std::uint16_t time = 0;
+    std::uint16_t value[3] = {0, 0, 0};
+};
+
+// League's "r3d2canm" container: keyframe-compressed animations. The jump cache
+// only seeds a window; playback walks the per-channel key list so the four
+// control points bracket the requested time.
 struct CompressedAnimation {
     std::uint32_t version = 0;
     std::uint32_t flags = 0;
@@ -36,6 +42,9 @@ struct CompressedAnimation {
 
     std::vector<std::uint32_t> joint_hashes;
     std::vector<CompressedFrame> frames;
+    // frames bucketed per joint and transform (0 rotation, 1 translation,
+    // 2 scale), in time order.
+    std::vector<std::vector<CompressedTrackKey>> tracks;  // [joint*3 + transform]
     // Raw jump caches: jump_cache_count * joint_count records, 24 bytes each
     // (4 x u16 per transform) or 48 bytes when frame_count >= 0x10001.
     std::vector<std::uint8_t> jump_caches;

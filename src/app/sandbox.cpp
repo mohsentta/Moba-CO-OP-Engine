@@ -184,6 +184,7 @@ struct Args {
     // Legacy data-level mirror, kept for comparison only.
     bool mirror_x = false;
     std::string scenario_path = "scenario.txt";
+    std::string force_anim;
     float pick_x = -1.0f;
     float pick_y = -1.0f;
     int select_piece = -1;
@@ -666,6 +667,8 @@ int main(int argc, char** argv) {
             args.mirror_x = false;
         } else if (arg == "--lh-view") {
             args.right_handed_view = false;
+        } else if (arg == "--anim") {
+            if (!next(args.force_anim)) return 2;
         } else if (arg == "--scenario") {
             if (!next(args.scenario_path)) return 2;
         } else if (arg == "--pick-test") {
@@ -1928,7 +1931,9 @@ int main(int argc, char** argv) {
             };
 
             std::string desired;
-            if (cast_lock > 0.0f && !cast_action.empty()) {
+            if (!args.force_anim.empty()) {
+                desired = args.force_anim;  // --anim, for inspection
+            } else if (cast_lock > 0.0f && !cast_action.empty()) {
                 desired = cast_action;
             } else if (attack_lock > 0.0f) {
                 desired = "attack" + std::to_string(1 + (attack_variant % 6));
