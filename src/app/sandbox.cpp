@@ -1846,18 +1846,34 @@ int main(int argc, char** argv) {
             was_moving = moving;
 
             const std::string weapon_key = rocket_mode ? "rlauncher_" : "minigun_";
-            const auto clip_for = [&](const std::string& action) -> const lolview::Anm* {
-                auto it = clips.find(weapon_key + action);
-                if (it == clips.end() || it->second.empty()) {
-                    it = clips.find(action);
+            const auto find_clip = [&](const std::string& base) -> const lolview::Anm* {
+                for (const std::string& key : {weapon_key + base, base}) {
+                    const auto it = clips.find(key);
+                    if (it != clips.end() && !it->second.empty()) return &it->second.front();
                 }
-                if (it == clips.end() || it->second.empty()) return nullptr;
-                const std::size_t choice =
-                    (action.rfind("run", 0) == 0 ? walk_variant
-                                                 : action.rfind("idle", 0) == 0 ? idle_variant
-                                                                                : 0) %
-                    it->second.size();
-                return &it->second[choice];
+                return nullptr;
+            };
+            const auto clip_for = [&](const std::string& action) -> const lolview::Anm* {
+                if (const auto* exact = find_clip(action)) return exact;
+                // Fall back within the family so a missing variant never drops
+                // the character to bind pose (which reads as T-pose flicker).
+                if (action.rfind("idle", 0) == 0) {
+                    for (int i = 1; i <= 3; ++i) {
+                        if (const auto* c = find_clip("idle" + std::to_string(i))) return c;
+                    }
+                } else if (action.rfind("run", 0) == 0) {
+                    if (const auto* c = find_clip("run")) return c;
+                    if (const auto* c = find_clip("run2")) return c;
+                } else if (action.rfind("attack", 0) == 0) {
+                    for (int i = 1; i <= 6; ++i) {
+                        if (const auto* c = find_clip("attack" + std::to_string(i))) return c;
+                    }
+                } else if (action.rfind("spell", 0) == 0) {
+                    for (int i = 1; i <= 4; ++i) {
+                        if (const auto* c = find_clip("spell" + std::to_string(i))) return c;
+                    }
+                }
+                return nullptr;
             };
 
             std::string desired;
@@ -1884,7 +1900,19 @@ int main(int argc, char** argv) {
             }
             clip_time += dt;
 
-            const lolview::Anm* clip = clips.empty() ? nullptr : clip_for(current_clip);
+            const lolview::Anm* clip = nullptr;
+            if (!clips.empty()) {
+                clip = clip_for(current_clip);
+                if (clip == nullptr) {
+                    // Last resort: any clip at all beats bind pose.
+                    for (const auto& [key, list] : clips) {
+                        if (!list.empty()) {
+                            clip = &list.front();
+                            break;
+                        }
+                    }
+                }
+            }
             const float sampled =
                 clip != nullptr ? std::fmod(clip_time, std::max(clip->duration(), 0.01f))
                                 : 0.0f;
