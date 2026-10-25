@@ -1626,8 +1626,12 @@ int main(int argc, char** argv) {
             std::string model;
             float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, hp = 0.0f, max_hp = 0.0f;
             int team = 0;
+            int anim = 0;  // host-assigned AnimState
         };
         std::vector<RemoteUnit> remote_units;
+        // unit id -> champion name, straight from the host roster.
+        std::map<std::uint16_t, std::string> player_champions;
+        std::map<std::uint16_t, float> remote_phase;  // per-unit animation clock
         std::uint16_t net_target = 0xffff;
         float last_auto_attack = -100.0f;
         float last_auto_spell = -100.0f;
@@ -1668,6 +1672,7 @@ int main(int argc, char** argv) {
                 net_socket.set_non_blocking(true);
                 lolview::net::Hello hello;
                 hello.name = "player";
+                hello.champion = args.champion;
                 const bool sent =
                     net_socket.send_to(server_host, server_port, lolview::net::encode(hello));
                 std::printf("  net     : hello %s -> %s:%u (local port %u)\n",
@@ -2145,8 +2150,9 @@ int main(int argc, char** argv) {
                 const float distance = lolview::length(delta);
                 if (distance > 2.0f) {
                     const lolview::Vec3 direction = delta * (1.0f / distance);
-                    // Speed up when far behind so corrections are not sluggish.
-                    const float speed = std::max(420.0f, distance * 6.0f);
+                    // Constant speed: the host walks at 380 u/s, so the client
+                    // matches it and only catches up after a network hitch.
+                    const float speed = 380.0f;
                     champion_position =
                         champion_position + direction * std::min(distance, speed * dt);
                     const float target_yaw = std::atan2(direction.x, direction.z);
@@ -2407,6 +2413,16 @@ int main(int argc, char** argv) {
             // ---- network: pull the latest authoritative snapshot ----
             if (connected) {
                 while (const auto datagram = net_socket.recv()) {
+                    if (const auto roster = lolview::net::decode_players(datagram->data)) {
+                        for (const auto& info : roster->list) {
+                            player_champions[info.unit_id] = info.champion;
+                            if (info.unit_id != own_unit) {
+                                std::printf("  roster  : unit #%u plays %s\n", info.unit_id,
+                                            info.champion.c_str());
+                            }
+                        }
+                        continue;
+                    }
                     if (const auto snapshot = lolview::net::decode_snapshot(datagram->data)) {
                         remote_units.clear();
                         for (const auto& state : snapshot->units) {
@@ -2424,6 +2440,7 @@ int main(int argc, char** argv) {
                             unit.hp = state.hp;
                             unit.max_hp = state.max_hp;
                             unit.team = state.team;
+                            unit.anim = static_cast<int>(state.anim);
                             if (unit_models.find(unit.model) == unit_models.end()) {
                                 load_extra_model(unit.model);
                             }
@@ -2484,6 +2501,11 @@ int main(int argc, char** argv) {
                     net_socket.send_to(server_host, server_port,
                                        lolview::net::encode(intent));
                 }
+            }
+
+            for (auto& [remote_id, phase] : remote_phase) {
+                (void)remote_id;
+                phase += dt;
             }
 
             // ---- draw ----
@@ -2566,12 +2588,22 @@ int main(int argc, char** argv) {
                 const lolview::Skn* remote_mesh = &dummy_mesh;
                 const lolview::TexImage* remote_texture = nullptr;
                 const std::vector<lolview::Mat4>* remote_bones = nullptr;
+                std::vector<lolview::Mat4> remote_bones_storage;
                 if (remote.model == "champion") {
                     // Other players are champions too; without per-player model
                     // streaming they share this client's champion art (animated).
                     remote_mesh = &mesh;
                     remote_texture = has_texture ? &texture : nullptr;
                     remote_bones = &bones;
+                    // Play the clip the host assigned to this unit.
+                    const char* action = remote.anim == 1 ? "run" : "idle1";
+                    if (const auto* clip = compressed_for(action)) {
+                        float& phase = remote_phase[remote.id];
+                        const float t = std::fmod(phase, std::max(clip->duration, 0.01f));
+                        remote_bones_storage = lolview::compute_skin_matrices_from_keys(
+                            skeleton, lolview::evaluate_compressed(*clip, t));
+                        remote_bones = &remote_bones_storage;
+                    }
                 } else {
                     const auto mesh_it = unit_models.find(remote.model);
                     if (mesh_it != unit_models.end()) remote_mesh = mesh_it->second;

@@ -14,7 +14,7 @@ namespace lolview::net {
 //   WELCOME  server -> client : player id, tick, model table
 //   INTENT   client -> server : player, kind (move/attack/cast), slot, target
 //   SNAPSHOT server -> client : tick + one record per unit
-constexpr std::uint32_t kProtocolVersion = 2;
+constexpr std::uint32_t kProtocolVersion = 3;
 constexpr const char* kMagic = "LVN1";
 
 enum class MessageType : std::uint8_t {
@@ -22,6 +22,16 @@ enum class MessageType : std::uint8_t {
     Welcome = 2,
     Intent = 3,
     Snapshot = 4,
+    Players = 5,  // roster: which champion each player's unit is
+};
+
+// Animation state the host assigns to a unit; the client plays what it is told.
+enum class AnimState : std::uint8_t {
+    Idle = 0,
+    Run = 1,
+    Attack = 2,
+    Cast = 3,
+    Dead = 4,
 };
 
 enum class IntentKind : std::uint8_t {
@@ -36,6 +46,7 @@ struct Hello {
     std::string name;
     std::uint32_t version = kProtocolVersion;
     std::uint64_t content_hash = 0;
+    std::string champion;  // the model this client wants to play
 };
 
 struct Welcome {
@@ -55,6 +66,16 @@ struct Intent {
     std::uint16_t target = kNoTarget;
 };
 
+struct PlayerInfo {
+    std::uint16_t player_id = 0;
+    std::uint16_t unit_id = 0;
+    std::string champion;
+};
+
+struct Players {
+    std::vector<PlayerInfo> list;
+};
+
 struct UnitState {
     std::uint16_t id = 0;
     std::uint8_t model = 0;
@@ -65,6 +86,7 @@ struct UnitState {
     float hp = 0.0f;
     float max_hp = 0.0f;
     std::uint8_t team = 0;
+    AnimState anim = AnimState::Idle;
 };
 
 struct Snapshot {
@@ -76,6 +98,9 @@ std::vector<std::uint8_t> encode(const Hello& message);
 std::vector<std::uint8_t> encode(const Welcome& message);
 std::vector<std::uint8_t> encode(const Intent& message);
 std::vector<std::uint8_t> encode(const Snapshot& message);
+std::vector<std::uint8_t> encode(const Players& message);
+
+std::optional<Players> decode_players(std::span<const std::uint8_t> bytes);
 
 std::optional<MessageType> peek_type(std::span<const std::uint8_t> bytes);
 

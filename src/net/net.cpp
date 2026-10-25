@@ -148,6 +148,7 @@ std::vector<std::uint8_t> encode(const Hello& message) {
     writer.u32(message.version);
     writer.u64(message.content_hash);
     writer.str(message.name);
+    writer.str(message.champion);
     return writer.finish(MessageType::Hello);
 }
 
@@ -187,8 +188,20 @@ std::vector<std::uint8_t> encode(const Snapshot& message) {
         writer.f32(unit.hp);
         writer.f32(unit.max_hp);
         writer.u8(unit.team);
+        writer.u8(static_cast<std::uint8_t>(unit.anim));
     }
     return writer.finish(MessageType::Snapshot);
+}
+
+std::vector<std::uint8_t> encode(const Players& message) {
+    Writer writer;
+    writer.u16(static_cast<std::uint16_t>(message.list.size()));
+    for (const auto& player : message.list) {
+        writer.u16(player.player_id);
+        writer.u16(player.unit_id);
+        writer.str(player.champion);
+    }
+    return writer.finish(MessageType::Players);
 }
 
 std::optional<MessageType> peek_type(std::span<const std::uint8_t> bytes) {
@@ -199,6 +212,7 @@ std::optional<MessageType> peek_type(std::span<const std::uint8_t> bytes) {
         case MessageType::Welcome:
         case MessageType::Intent:
         case MessageType::Snapshot:
+        case MessageType::Players:
             return type;
         default:
             return std::nullopt;
@@ -212,6 +226,7 @@ std::optional<Hello> decode_hello(std::span<const std::uint8_t> bytes) {
     hello.version = reader.u32();
     hello.content_hash = reader.u64();
     hello.name = reader.str();
+    hello.champion = reader.str();
     if (!reader.ok()) return std::nullopt;
     return hello;
 }
@@ -245,6 +260,23 @@ std::optional<Intent> decode_intent(std::span<const std::uint8_t> bytes) {
     return intent;
 }
 
+std::optional<Players> decode_players(std::span<const std::uint8_t> bytes) {
+    Reader reader = payload_reader(bytes, MessageType::Players);
+    if (reader.remaining() == 0) return std::nullopt;
+    Players players;
+    const std::uint16_t count = reader.u16();
+    players.list.reserve(count);
+    for (std::uint16_t i = 0; i < count; ++i) {
+        PlayerInfo info;
+        info.player_id = reader.u16();
+        info.unit_id = reader.u16();
+        info.champion = reader.str();
+        players.list.push_back(info);
+    }
+    if (!reader.ok()) return std::nullopt;
+    return players;
+}
+
 std::optional<Snapshot> decode_snapshot(std::span<const std::uint8_t> bytes) {
     Reader reader = payload_reader(bytes, MessageType::Snapshot);
     if (reader.remaining() == 0) return std::nullopt;
@@ -263,6 +295,7 @@ std::optional<Snapshot> decode_snapshot(std::span<const std::uint8_t> bytes) {
         unit.hp = reader.f32();
         unit.max_hp = reader.f32();
         unit.team = reader.u8();
+        unit.anim = static_cast<AnimState>(reader.u8());
         snapshot.units.push_back(unit);
     }
     if (!reader.ok()) return std::nullopt;

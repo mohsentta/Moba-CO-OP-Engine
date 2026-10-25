@@ -53,6 +53,10 @@ public:
     // up outside the area back inside). False when no cell is walkable.
     bool nearest_walkable(float x, float z, float& out_x, float& out_z) const;
 
+    // True when a straight segment stays inside the walkable area. Used to
+    // smooth grid paths into direct lines.
+    bool line_clear(float x0, float z0, float x1, float z1) const;
+
 private:
     std::pair<int, int> cell_of(float x, float z) const;
     std::pair<float, float> centre_of(int cx, int cz) const;

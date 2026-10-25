@@ -44,6 +44,9 @@ struct Unit {
     float max_hp = 100.0f;
     int team = 0;
     bool dead = false;
+    lolview::net::AnimState anim = lolview::net::AnimState::Idle;
+    float prev_x = 0.0f;
+    float prev_z = 0.0f;
     std::vector<std::pair<float, float>> path;  // remaining waypoints
     std::size_t path_index = 0;
 };
@@ -408,7 +411,7 @@ int main(int argc, char** argv) {
 
                 Unit unit;
                 unit.id = world.next_id++;
-                unit.model = "champion";
+                unit.model = hello->champion.empty() ? "champion" : hello->champion;
                 // Spread players along x so they can see each other.
                 unit.x = 260.0f * (static_cast<float>(client.player_id) - 1.5f) * 2.0f;
                 unit.z = 0.0f;
@@ -440,6 +443,22 @@ int main(int argc, char** argv) {
                 welcome.tick = static_cast<std::uint32_t>(world.tick);
                 welcome.models = kModels;
                 socket.send_to(client.host, client.port, lolview::net::encode(welcome));
+
+                // Tell everyone who is in the session and which champion they
+                // play, so clients never guess at models.
+                lolview::net::Players roster;
+                for (const auto& other : clients) {
+                    lolview::net::PlayerInfo info;
+                    info.player_id = other.player_id;
+                    info.unit_id = other.unit_id;
+                    const Unit* other_unit = world.find(other.unit_id);
+                    info.champion = other_unit != nullptr ? other_unit->model : "champion";
+                    roster.list.push_back(info);
+                }
+                const auto roster_packet = lolview::net::encode(roster);
+                for (const auto& other : clients) {
+                    socket.send_to(other.host, other.port, roster_packet);
+                }
                 std::printf("server: player %u joined from %s:%u (unit #%u, name '%s')\n",
                             client.player_id, client.host.c_str(), client.port, unit.id,
                             hello->name.c_str());
@@ -497,6 +516,10 @@ int main(int argc, char** argv) {
         }
 
         // ---- simulate ----
+        for (auto& unit : world.units) {
+            unit.prev_x = unit.x;
+            unit.prev_z = unit.z;
+        }
         const float walk_step = 380.0f * kTickSeconds;
         // Players are never left outside the walkable area.
         if (world.grid.valid()) {
@@ -533,6 +556,17 @@ int main(int argc, char** argv) {
             if (unit.path_index >= unit.path.size()) unit.path.clear();
         }
         run_tick(state, world, kTickSeconds);
+        // Animation state is decided by the host, never by the client.
+        for (auto& unit : world.units) {
+            if (unit.dead) {
+                unit.anim = lolview::net::AnimState::Dead;
+                continue;
+            }
+            const float dx = unit.x - unit.prev_x;
+            const float dz = unit.z - unit.prev_z;
+            unit.anim = (dx * dx + dz * dz) > 0.25f ? lolview::net::AnimState::Run
+                                                    : lolview::net::AnimState::Idle;
+        }
         ++world.tick;
         world.elapsed += kTickSeconds;
 
@@ -555,6 +589,7 @@ int main(int argc, char** argv) {
                 state_on_wire.hp = unit.hp;
                 state_on_wire.max_hp = unit.max_hp;
                 state_on_wire.team = static_cast<std::uint8_t>(unit.team);
+                state_on_wire.anim = unit.anim;
                 snapshot.units.push_back(state_on_wire);
             }
             const auto packet = lolview::net::encode(snapshot);

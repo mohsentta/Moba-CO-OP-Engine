@@ -172,6 +172,21 @@ bool NavGrid::nearest_walkable(float x, float z, float& out_x, float& out_z) con
     return false;
 }
 
+bool NavGrid::line_clear(float x0, float z0, float x1, float z1) const {
+    if (!valid()) return false;
+    const float dx = x1 - x0;
+    const float dz = z1 - z0;
+    const float distance = std::sqrt(dx * dx + dz * dz);
+    // Sample finer than a cell so a diagonal cannot slip through a corner.
+    const float step = cell_ * 0.35f;
+    const int samples = std::max(1, static_cast<int>(std::ceil(distance / step)));
+    for (int i = 0; i <= samples; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(samples);
+        if (!point_walkable(x0 + dx * t, z0 + dz * t)) return false;
+    }
+    return true;
+}
+
 bool NavGrid::find_path(float start_x, float start_z, float goal_x, float goal_z,
                         std::vector<std::pair<float, float>>& out) const {
     out.clear();
@@ -253,6 +268,28 @@ bool NavGrid::find_path(float start_x, float start_z, float goal_x, float goal_z
     }
     // Finish on the exact goal rather than the last cell centre.
     out.push_back({goal_x, goal_z});
+
+    // String pulling: replace the grid staircase with the furthest visible point
+    // at each step, so movement is a straight line wherever the area allows.
+    std::vector<std::pair<float, float>> points;
+    points.push_back({start_x, start_z});
+    for (const auto& point : out) points.push_back(point);
+
+    std::vector<std::pair<float, float>> smoothed;
+    std::size_t current = 0;
+    while (current + 1 < points.size()) {
+        std::size_t best = current + 1;
+        for (std::size_t candidate = points.size() - 1; candidate > current + 1; --candidate) {
+            if (line_clear(points[current].first, points[current].second,
+                           points[candidate].first, points[candidate].second)) {
+                best = candidate;
+                break;
+            }
+        }
+        smoothed.push_back(points[best]);
+        current = best;
+    }
+    out = smoothed;
     return true;
 }
 

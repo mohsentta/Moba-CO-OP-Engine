@@ -475,6 +475,20 @@ void test_walk_area() {
     for (const auto& point : route) {
         CHECK(blocked.contains(point.first, point.second));
     }
+    // Smoothed paths: a straight shot should collapse to a single waypoint, and
+    // every segment must stay inside the area.
+    std::vector<std::pair<float, float>> straight;
+    CHECK(grid.find_path(-90.0f, -60.0f, 90.0f, -60.0f, straight));
+    CHECK(straight.size() <= 3);
+    float previous_x = -90.0f, previous_z = -60.0f;
+    for (const auto& point : straight) {
+        CHECK(grid.line_clear(previous_x, previous_z, point.first, point.second));
+        previous_x = point.first;
+        previous_z = point.second;
+    }
+    CHECK(std::fabs(previous_x - 90.0f) < 1.0f);
+    CHECK(std::fabs(previous_z + 60.0f) < 1.0f);
+
     // A point outside the area can be pulled to the nearest walkable cell.
     float inside_x = 0.0f, inside_z = 0.0f;
     CHECK(grid.nearest_walkable(-70.0f, 0.0f, inside_x, inside_z));
@@ -497,9 +511,11 @@ void test_net() {
 
     Hello hello;
     hello.name = "jinx";
+    hello.champion = "Jinx";
     hello.content_hash = 0x1122334455667788ull;
     const auto hello_bytes = encode(hello);
-    CHECK_EQ(hello_bytes.size(), std::size_t{12} + 4 + 8 + 2 + 4);
+    // header + version + hash + name + champion
+    CHECK_EQ(hello_bytes.size(), std::size_t{12} + 4 + 8 + (2 + 4) + (2 + 4));
     CHECK(peek_type(hello_bytes) == MessageType::Hello);
     const auto hello_back = decode_hello(hello_bytes);
     CHECK(hello_back.has_value());
@@ -507,6 +523,7 @@ void test_net() {
         CHECK_EQ(hello_back->name, std::string("jinx"));
         CHECK_EQ(hello_back->content_hash, hello.content_hash);
         CHECK_EQ(hello_back->version, kProtocolVersion);
+        CHECK_EQ(hello_back->champion, std::string("Jinx"));
     }
 
     Intent intent;
@@ -548,7 +565,22 @@ void test_net() {
     unit.hp = 100.0f;
     unit.max_hp = 200.0f;
     unit.team = 1;
+    unit.anim = AnimState::Run;
     snapshot.units.push_back(unit);
+
+    Players roster;
+    PlayerInfo info;
+    info.player_id = 1;
+    info.unit_id = 4;
+    info.champion = "Jinx";
+    roster.list.push_back(info);
+    const auto roster_back = decode_players(encode(roster));
+    CHECK(roster_back.has_value());
+    if (roster_back) {
+        CHECK_EQ(roster_back->list.size(), std::size_t{1});
+        CHECK_EQ(roster_back->list[0].unit_id, std::uint16_t{4});
+        CHECK_EQ(roster_back->list[0].champion, std::string("Jinx"));
+    }
     const auto snapshot_back = decode_snapshot(encode(snapshot));
     CHECK(snapshot_back.has_value());
     if (snapshot_back) {
@@ -556,6 +588,7 @@ void test_net() {
         CHECK_EQ(snapshot_back->units.size(), std::size_t{1});
         CHECK_EQ(snapshot_back->units[0].id, std::uint16_t{5});
         CHECK_EQ(snapshot_back->units[0].team, std::uint8_t{1});
+        CHECK(snapshot_back->units[0].anim == AnimState::Run);
     }
 
     // Truncated or mistyped datagrams must be rejected, not read past their end.
