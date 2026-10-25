@@ -50,6 +50,11 @@ public:
     // Horizontal quad on y = 0, used for the sandbox ground.
     static Skn make_plane(float half_extent);
 
+    // Build a mesh from raw parts (map geometry chunks, procedural props).
+    static Skn from_parts(std::vector<SknMaterial> materials,
+                          std::vector<SknVertex> vertices,
+                          std::vector<std::uint16_t> indices);
+
     std::uint16_t major_version() const noexcept { return major_; }
     std::uint16_t minor_version() const noexcept { return minor_; }
     const std::vector<SknMaterial>& materials() const noexcept { return materials_; }

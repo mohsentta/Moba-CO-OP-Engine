@@ -108,6 +108,7 @@ add_library(lolview_core STATIC
     src/formats/dds.cpp
     src/formats/decompress.cpp
     src/formats/ground.cpp
+    src/formats/mapgeo.cpp
     src/formats/anm.cpp
     src/formats/pose.cpp
     src/formats/skl.cpp
@@ -162,3 +163,6 @@ enable_testing()
 add_executable(lolview_tests tests/test_main.cpp)
 target_link_libraries(lolview_tests PRIVATE lolview_core)
 add_test(NAME core_tests COMMAND lolview_tests)
+
+add_executable(mapgeo_probe src/tools/mapgeo_probe.cpp)
+target_link_libraries(mapgeo_probe PRIVATE lolview_core)

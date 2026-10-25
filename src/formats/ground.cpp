@@ -34,4 +34,16 @@ Skn Skn::make_plane(float half_extent) {
     return plane;
 }
 
+Skn Skn::from_parts(std::vector<SknMaterial> materials, std::vector<SknVertex> vertices,
+                    std::vector<std::uint16_t> indices) {
+    Skn mesh;
+    mesh.major_ = 4;
+    mesh.minor_ = 0;
+    mesh.vertex_stride_ = kBaseVertexStride;
+    mesh.materials_ = std::move(materials);
+    mesh.vertices_ = std::move(vertices);
+    mesh.indices_ = std::move(indices);
+    return mesh;
+}
+
 }  // namespace lolview

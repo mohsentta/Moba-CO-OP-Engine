@@ -10,6 +10,7 @@
 #include <lolview/anm.hpp>
 #include <lolview/asset_source.hpp>
 #include <lolview/bin.hpp>
+#include <lolview/mapgeo.hpp>
 #include <lolview/pose.hpp>
 #include <lolview/renderer.hpp>
 #include <lolview/skl.hpp>
@@ -34,6 +35,7 @@
 #include <cstring>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -475,33 +477,174 @@ int main(int argc, char** argv) {
             }
         }
 
-        // The Rift minimap is a clean top-down painting; far better ground than
-        // a procedural grid. It lives in the 2.4 GB map archive, so it is opt-in.
-        lolview::TexImage map_texture;
-        bool has_map_texture = false;
+        // ---- Summoner's Rift terrain, straight out of the map archive ----
+        lolview::Skn terrain_mesh;
+        bool has_terrain = false;
+        lolview::Vec3 spawn{0.0f, 0.0f, 0.0f};
+
         if (args.load_map) {
-            if (auto bytes = resolve_chunk(args.game_dir, "Map11",
-                                           "assets/maps/info/map11/2dlevelminimap.dds")) {
+            const auto bytes = resolve_chunk(args.game_dir, "Map11",
+                                             "data/maps/mapgeometry/map11/base_srx.mapgeo");
+            if (!bytes) {
+                std::fprintf(stderr, "warning: map terrain not found in Map11.wad\n");
+            } else {
                 try {
-                    map_texture = lolview::decode_dds(*bytes);
-                    for (int row = 0; row < map_texture.height / 2; ++row) {
-                        auto* top = map_texture.rgba.data() +
-                                    static_cast<std::size_t>(row) * map_texture.width * 4;
-                        auto* bottom = map_texture.rgba.data() +
-                                       static_cast<std::size_t>(map_texture.height - 1 - row) *
-                                           map_texture.width * 4;
-                        for (int i = 0; i < map_texture.width * 4; ++i) {
-                            std::swap(top[i], bottom[i]);
+                    const auto asset = lolview::load_mapgeo(*bytes);
+                    double cx = 0.0, cy = 0.0, cz = 0.0;
+                    std::size_t count = 0;
+                    std::set<std::pair<int, int>> water_cells;
+                    double spawn_sum_x = 0.0, spawn_sum_y = 0.0, spawn_sum_z = 0.0;
+                    std::size_t spawn_vertices = 0;
+                    const auto cell_of = [](float x, float z) {
+                        return std::pair<int, int>{static_cast<int>(std::floor(x / 900.0f)),
+                                                   static_cast<int>(std::floor(z / 900.0f))};
+                    };
+                    for (const auto& mesh : asset.meshes) {
+                        const std::string material =
+                            mesh.submeshes.empty() ? std::string() : mesh.submeshes.front().material;
+                        const bool is_water = material.find("Water") != std::string::npos ||
+                                              material.find("Ocean") != std::string::npos;
+                        const bool is_spawn = material.find("Spawn") != std::string::npos;
+                        for (const auto& vertex : mesh.vertices) {
+                            cx += vertex.px;
+                            cy += vertex.py;
+                            cz += vertex.pz;
+                            ++count;
+                            if (is_water) water_cells.insert(cell_of(vertex.px, vertex.pz));
+                            if (is_spawn) {
+                                spawn_sum_x += vertex.px;
+                                spawn_sum_y += vertex.py;
+                                spawn_sum_z += vertex.pz;
+                                ++spawn_vertices;
+                            }
                         }
                     }
-                    has_map_texture = true;
-                    std::printf("  map     : minimap %dx%d\n", map_texture.width,
-                                map_texture.height);
+                    if (count > 0) {
+                        cx /= static_cast<double>(count);
+                        cy /= static_cast<double>(count);
+                        cz /= static_cast<double>(count);
+                    }
+                    const lolview::Vec3 center{static_cast<float>(cx), static_cast<float>(cy),
+                                               static_cast<float>(cz)};
+
+                    // Prefer the fountain as the practice spot: it is flat, dry
+                    // and recognisable, unlike the middle of the map (river).
+                    lolview::Vec3 focus = center;
+                    if (spawn_vertices > 0) {
+                        focus = lolview::Vec3{
+                            static_cast<float>(spawn_sum_x / static_cast<double>(spawn_vertices)),
+                            static_cast<float>(spawn_sum_y / static_cast<double>(spawn_vertices)),
+                            static_cast<float>(spawn_sum_z / static_cast<double>(spawn_vertices))};
+                    }
+
+                    // Pick the meshes closest to the centre until the u16 index
+                    // range is reached, so the champion stands on real ground
+                    // rather than the middle of the whole map.
+                    std::vector<std::size_t> order(asset.meshes.size());
+                    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+                    std::vector<float> distance_sq(order.size(), 0.0f);
+                    for (std::size_t i = 0; i < order.size(); ++i) {
+                        const auto& mesh = asset.meshes[i];
+                        float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+                        for (const auto& vertex : mesh.vertices) {
+                            sx += vertex.px;
+                            sy += vertex.py;
+                            sz += vertex.pz;
+                        }
+                        const float n = static_cast<float>(std::max<std::size_t>(1, mesh.vertices.size()));
+                        const float dx = sx / n - focus.x;
+                        const float dy = sy / n - focus.y;
+                        const float dz = sz / n - focus.z;
+                        distance_sq[i] = dx * dx + dy * dy + dz * dz;
+                    }
+                    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+                        return distance_sq[a] < distance_sq[b];
+                    });
+
+                    std::vector<lolview::SknMaterial> materials;
+                    std::vector<lolview::SknVertex> vertices;
+                    std::vector<std::uint16_t> indices;
+                    float closest = 1e30f;
+                    float spawn_y = center.y;
+                    float closest_ground = 1e30f;
+                    float ground_y = center.y;
+                    bool have_ground = false;
+
+                    for (std::size_t index : order) {
+                        const auto& mesh = asset.meshes[index];
+                        if (mesh.vertices.empty()) continue;
+                        if (vertices.size() + mesh.vertices.size() > 64000) continue;
+
+                        const std::uint32_t base_vertex =
+                            static_cast<std::uint32_t>(vertices.size());
+                        const std::uint32_t base_index =
+                            static_cast<std::uint32_t>(indices.size());
+
+                        const bool is_ground =
+                            !mesh.submeshes.empty() &&
+                            mesh.submeshes.front().material.find("Ground") != std::string::npos;
+
+                        for (const auto& source : mesh.vertices) {
+                            lolview::SknVertex vertex{};
+                            vertex.position = {source.px, source.py, source.pz};
+                            vertex.normal = {source.nx, source.ny, source.nz};
+                            vertex.uv = {source.u, source.v};
+                            vertex.bone_indices = {0, 0, 0, 0};
+                            vertex.weights = {1.0f, 0.0f, 0.0f, 0.0f};
+                            vertices.push_back(vertex);
+
+                            const float dx = source.px - focus.x;
+                            const float dz = source.pz - focus.z;
+                            const float horizontal = dx * dx + dz * dz;
+                            if (horizontal < closest) {
+                                closest = horizontal;
+                                spawn_y = source.py;
+                            }
+                            if (is_ground && horizontal < closest_ground) {
+                                const auto cell = cell_of(source.px, source.pz);
+                                bool dry = true;
+                                for (int ox = -1; ox <= 1 && dry; ++ox) {
+                                    for (int oz = -1; oz <= 1 && dry; ++oz) {
+                                        if (water_cells.count({cell.first + ox, cell.second + oz})) {
+                                            dry = false;
+                                        }
+                                    }
+                                }
+                                if (dry) {
+                                    closest_ground = horizontal;
+                                    ground_y = source.py;
+                                    have_ground = true;
+                                }
+                            }
+                        }
+                        for (std::uint16_t index : mesh.indices) {
+                            indices.push_back(static_cast<std::uint16_t>(base_vertex + index));
+                        }
+
+                        lolview::SknMaterial material;
+                        material.name = mesh.submeshes.empty() ? "Terrain"
+                                                               : mesh.submeshes.front().material;
+                        material.start_vertex = base_vertex;
+                        material.num_vertices = static_cast<std::uint32_t>(mesh.vertices.size());
+                        material.start_index = base_index;
+                        material.num_indices = static_cast<std::uint32_t>(mesh.indices.size());
+                        if (material.num_indices > 0) materials.push_back(std::move(material));
+
+                        if (vertices.size() > 60000) break;
+                    }
+
+                    terrain_mesh = lolview::Skn::from_parts(std::move(materials),
+                                                           std::move(vertices),
+                                                           std::move(indices));
+                    has_terrain = terrain_mesh.indices().size() > 0;
+                    spawn = lolview::Vec3{focus.x, have_ground ? ground_y : spawn_y, focus.z};
+                    std::printf("  terrain : %zu verts, %zu tris around (%.0f, %.0f, %.0f)\n",
+                                terrain_mesh.vertices().size(),
+                                terrain_mesh.indices().size() / 3, spawn.x, spawn.y,
+                                spawn.z);
                 } catch (const std::exception& error) {
-                    std::fprintf(stderr, "warning: map texture failed: %s\n", error.what());
+                    std::fprintf(stderr, "warning: terrain parse failed: %s\n", error.what());
                 }
-            } else {
-                std::fprintf(stderr, "warning: map minimap texture not found\n");
             }
         }
 
@@ -533,12 +676,12 @@ int main(int argc, char** argv) {
         LeagueCamera camera;
         if (args.pitch_degrees > 0.0f) camera.pitch = args.pitch_degrees * kPi / 180.0f;
         if (args.distance > 0.0f) camera.distance = args.distance;
-        lolview::Vec3 champion_position{0.0f, 0.0f, 0.0f};
+        lolview::Vec3 champion_position = spawn;
         float champion_yaw = 0.0f;
         bool has_move_target = false;
         lolview::Vec3 move_target{};
 
-        const lolview::Vec3 dummy_position{0.0f, 0.0f, 700.0f};
+        lolview::Vec3 dummy_position = spawn + lolview::Vec3{0.0f, 0.0f, 700.0f};
         float dummy_hp = 1000.0f;
         const float dummy_max_hp = 1000.0f;
         float dummy_flash = 0.0f;
@@ -792,8 +935,13 @@ int main(int argc, char** argv) {
                 kFovDegrees * kPi / 180.0f, static_cast<float>(w) / static_cast<float>(h),
                 1.0f, 8000.0f);
 
-            renderer.draw_scene(ground, has_map_texture ? &map_texture : &ground_texture, nullptr,
-                                nullptr, lolview::Mat4::identity(), view, proj, w, h);
+            if (has_terrain) {
+                renderer.draw_scene(terrain_mesh, nullptr, nullptr, nullptr,
+                                    lolview::Mat4::identity(), view, proj, w, h);
+            } else {
+                renderer.draw_scene(ground, &ground_texture, nullptr, nullptr,
+                                    lolview::Mat4::identity(), view, proj, w, h);
+            }
             renderer.draw_scene(mesh, has_texture ? &texture : nullptr, &bones, nullptr,
                                 model_matrix(champion_position, champion_yaw), view, proj, w, h);
             if (has_pet) {
