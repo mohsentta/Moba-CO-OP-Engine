@@ -2,12 +2,14 @@
 #
 #   unit <model> <hp> <dx> <dz> [team]
 #
-# model  : "ahri" (champion), "pet" (jungle pet), "cube" (procedural)
+# model  : "ahri" (champion), "pet" (jungle pet), "minion" (melee minion),
+#          "cube" (procedural)
 # dx, dz : offset from the player's spawn point, in world units
 # team   : 0 = player side, 1 = enemy (default 0)
 #
 # The player always controls the champion; other units are targets.
 
-unit cube 1000  180  430  1
-unit cube  620 -260  330  1
-unit pet   350  330  520  1
+unit minion 480  180  430  1
+unit minion 480 -260  330  1
+unit pet    350  330  520  1
+unit cube  1000  520  260  1

@@ -35,6 +35,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -1325,6 +1326,57 @@ int main(int argc, char** argv) {
         const lolview::TexImage ground_texture = make_ground_texture();
         const unsigned ground_texture_id = renderer.upload_texture(ground_texture);
 
+        // ---- unit model registry ----
+        // Scenario files name a model; the registry maps that name to geometry
+        // owned here, so any provider model can be spawned by name.
+        std::map<std::string, const lolview::Skn*> unit_models;
+        std::map<std::string, const lolview::TexImage*> unit_textures;
+        std::vector<std::unique_ptr<lolview::Skn>> owned_models;
+        std::vector<std::unique_ptr<lolview::TexImage>> owned_textures;
+
+        unit_models[args.champion] = &mesh;
+        if (has_texture) unit_textures[args.champion] = &texture;
+        if (has_pet) {
+            unit_models["pet"] = &pet_mesh;
+            if (has_pet_texture) unit_textures["pet"] = &pet_texture;
+        }
+        unit_models["cube"] = &dummy_mesh;
+
+        const auto load_extra_model = [&](const std::string& name) -> const lolview::Skn* {
+            std::string archive_filter;
+            std::string mesh_path;
+            std::string texture_path;
+            if (name == "minion" || name == "minion_melee") {
+                archive_filter = "Map12";
+                mesh_path =
+                    "assets/characters/ha_chaosminionmelee/skins/base/chaos_minion_melee.skn";
+                texture_path =
+                    "assets/characters/ha_chaosminionmelee/skins/base/chaosminion_melee_tx_cm.tex";
+            } else {
+                return nullptr;
+            }
+            const auto mesh_bytes = resolve_chunk(args.game_dir, archive_filter, mesh_path);
+            if (!mesh_bytes) return nullptr;
+            auto model = std::make_unique<lolview::Skn>(lolview::Skn::parse(*mesh_bytes));
+            if (args.mirror_x) model->mirror_x();
+            const lolview::Skn* pointer = model.get();
+            owned_models.push_back(std::move(model));
+            if (const auto texture_bytes =
+                    resolve_chunk(args.game_dir, archive_filter, texture_path)) {
+                try {
+                    auto image =
+                        std::make_unique<lolview::TexImage>(lolview::decode_tex(*texture_bytes));
+                    unit_textures[name] = image.get();
+                    owned_textures.push_back(std::move(image));
+                } catch (const std::exception&) {
+                }
+            }
+            unit_models[name] = pointer;
+            std::printf("  model   : loaded '%s' (%zu verts)\n", name.c_str(),
+                        pointer->vertices().size());
+            return pointer;
+        };
+
         // ---- scenario: entities spawned from a plain-text script ----
         std::vector<Unit> units;
         {
@@ -1346,13 +1398,11 @@ int main(int argc, char** argv) {
                 unit.model = model;
                 unit.hp = unit.max_hp = hp;
                 unit.team = team;
-                if (model == args.champion) {
-                    unit.mesh = &mesh;
-                } else if (model == "pet" && has_pet) {
-                    unit.mesh = &pet_mesh;
-                } else {
-                    unit.mesh = &dummy_mesh;
+                if (unit_models.find(model) == unit_models.end()) {
+                    load_extra_model(model);
                 }
+                const auto found = unit_models.find(model);
+                unit.mesh = found != unit_models.end() ? found->second : &dummy_mesh;
                 unit.position = spawn + lolview::Vec3{dx, 0.0f, dz};
                 units.push_back(unit);
             }
@@ -1741,13 +1791,9 @@ int main(int argc, char** argv) {
             }
             for (const auto& unit : units) {
                 if (!unit.alive || unit.mesh == nullptr) continue;
-                if (unit.mesh == &pet_mesh && !has_pet) continue;
-                const lolview::TexImage* unit_texture = nullptr;
-                if (unit.mesh == &mesh && has_texture) {
-                    unit_texture = &texture;
-                } else if (unit.mesh == &pet_mesh && has_pet_texture) {
-                    unit_texture = &pet_texture;
-                }
+                const auto texture_it = unit_textures.find(unit.model);
+                const lolview::TexImage* unit_texture =
+                    texture_it != unit_textures.end() ? texture_it->second : nullptr;
                 renderer.draw_scene(*unit.mesh, unit_texture, nullptr, nullptr,
                                     model_matrix(unit.position, unit.yaw), view, proj, w, h);
             }
