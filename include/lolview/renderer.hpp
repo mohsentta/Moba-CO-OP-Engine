@@ -78,6 +78,9 @@ public:
     int cache_texture(const TexImage& image);
     void draw_cached(int mesh_id, int texture_id, const Mat4& model, const Mat4& view,
                      const Mat4& proj, int width, int height, int alpha_mode);
+    // Draws a cached mesh as flat coloured lines (selection highlight).
+    void draw_wireframe(int mesh_id, const Mat4& model, const Mat4& view, const Mat4& proj,
+                        int width, int height, const Vec3& color);
 
 private:
     struct Impl;

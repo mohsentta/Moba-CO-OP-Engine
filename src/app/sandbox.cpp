@@ -334,7 +334,77 @@ lolview::Vec3 transform_point(const lolview::Mat4& m, const lolview::Vec3& p) {
                          m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14]};
 }
 
-// Same pivot-based transform the renderer uses for a piece.
+lolview::Mat4 piece_matrix(const lolview::Vec3& position, const lolview::Vec3& center,
+                           float yaw, float scale);
+
+// Moller-Trumbore ray/triangle test.
+bool ray_triangle(const lolview::Vec3& origin, const lolview::Vec3& direction,
+                  const lolview::Vec3& a, const lolview::Vec3& b, const lolview::Vec3& c,
+                  float& out_t) {
+    const lolview::Vec3 edge1{b.x - a.x, b.y - a.y, b.z - a.z};
+    const lolview::Vec3 edge2{c.x - a.x, c.y - a.y, c.z - a.z};
+    const lolview::Vec3 p = lolview::cross(direction, edge2);
+    const float det = edge1.x * p.x + edge1.y * p.y + edge1.z * p.z;
+    if (std::fabs(det) < 1e-8f) return false;
+    const float inv = 1.0f / det;
+    const lolview::Vec3 s{origin.x - a.x, origin.y - a.y, origin.z - a.z};
+    const float u = (s.x * p.x + s.y * p.y + s.z * p.z) * inv;
+    if (u < 0.0f || u > 1.0f) return false;
+    const lolview::Vec3 q = lolview::cross(s, edge1);
+    const float v = (direction.x * q.x + direction.y * q.y + direction.z * q.z) * inv;
+    if (v < 0.0f || u + v > 1.0f) return false;
+    const float t = (edge2.x * q.x + edge2.y * q.y + edge2.z * q.z) * inv;
+    if (t <= 0.0f) return false;
+    out_t = t;
+    return true;
+}
+
+// Every piece under the ray, nearest first. Bounding spheres reject cheaply,
+// then real triangles decide, so thin and nested pieces pick correctly.
+std::vector<std::pair<float, int>> pick_pieces(const std::vector<MapPiece>& pieces,
+                                               const lolview::Vec3& origin,
+                                               const lolview::Vec3& direction) {
+    std::vector<std::pair<float, int>> hits;
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+        const auto& piece = pieces[i];
+        if (!piece.visible) continue;
+
+        const float cx = piece.position.x + piece.center.x * piece.scale;
+        const float cy = piece.position.y + piece.center.y * piece.scale;
+        const float cz = piece.position.z + piece.center.z * piece.scale;
+        const float ox = cx - origin.x, oy = cy - origin.y, oz = cz - origin.z;
+        const float tca = ox * direction.x + oy * direction.y + oz * direction.z;
+        if (tca < 0.0f) continue;
+        const float d2 = (ox * ox + oy * oy + oz * oz) - tca * tca;
+        const float radius = piece.radius * piece.scale;
+        if (d2 > radius * radius) continue;
+
+        const lolview::Mat4 model = piece_matrix(piece.position, piece.center, piece.yaw,
+                                                 piece.scale);
+        const auto& vertices = piece.mesh.vertices();
+        const auto& indices = piece.mesh.indices();
+        if (vertices.empty() || indices.size() < 3) continue;
+
+        std::vector<lolview::Vec3> world(vertices.size());
+        for (std::size_t v = 0; v < vertices.size(); ++v) {
+            world[v] = transform_point(
+                model, lolview::Vec3{vertices[v].position[0], vertices[v].position[1],
+                                     vertices[v].position[2]});
+        }
+
+        float best = 1e30f;
+        for (std::size_t t = 0; t + 2 < indices.size(); t += 3) {
+            float hit_t = 0.0f;
+            if (ray_triangle(origin, direction, world[indices[t]], world[indices[t + 1]],
+                             world[indices[t + 2]], hit_t)) {
+                best = std::min(best, hit_t);
+            }
+        }
+        if (best < 1e29f) hits.emplace_back(best, static_cast<int>(i));
+    }
+    std::sort(hits.begin(), hits.end());
+    return hits;
+}
 lolview::Mat4 piece_matrix(const lolview::Vec3& position, const lolview::Vec3& center, float yaw,
                            float scale) {
     return lolview::translation(position) * lolview::translation(center) * rotation_y(yaw) *
@@ -1316,6 +1386,17 @@ int main(int argc, char** argv) {
         bool has_move_target = false;
         lolview::Vec3 move_target{};
 
+        // Editor mode starts from the play camera so it opens on what you were
+        // looking at, not at the world origin.
+        camera.focus = champion_position + lolview::Vec3{0.0f, 0.0f, 220.0f};
+        if (args.start_free_camera) {
+            free_camera.position = camera.eye();
+            const lolview::Vec3 direction =
+                lolview::normalize(camera.focus - free_camera.position);
+            free_camera.yaw = std::atan2(direction.x, direction.z);
+            free_camera.pitch = std::asin(std::clamp(direction.y, -1.0f, 1.0f));
+        }
+
         lolview::Vec3 dummy_position = spawn + lolview::Vec3{0.0f, 0.0f, 700.0f};
         float dummy_hp = 1000.0f;
         const float dummy_max_hp = 1000.0f;
@@ -1785,6 +1866,16 @@ int main(int argc, char** argv) {
             }
             renderer.draw_scene(mesh, has_texture ? &texture : nullptr, &bones, nullptr,
                                 model_matrix(champion_position, champion_yaw), view, proj, w, h);
+
+            // Selection highlight: the picked piece as red wireframe.
+            if (editor_mode && selected_piece >= 0 &&
+                selected_piece < static_cast<int>(map_pieces.size())) {
+                const auto& piece = map_pieces[selected_piece];
+                const lolview::Mat4 model =
+                    piece_matrix(piece.position, piece.center, piece.yaw, piece.scale);
+                renderer.draw_wireframe(piece.mesh_id, model, view, proj, w, h,
+                                        lolview::Vec3{1.0f, 0.2f, 0.2f});
+            }
             if (has_pet) {
                 renderer.draw_scene(pet_mesh, has_pet_texture ? &pet_texture : nullptr, nullptr,
                                     nullptr, lolview::translation(pet_position), view, proj, w, h);
@@ -1816,32 +1907,23 @@ int main(int argc, char** argv) {
                 SDL_GetMouseState(&mouse_x, &mouse_y);
                 lolview::Vec3 ray_origin, ray_direction;
                 camera_ray(camera, mouse_x, mouse_y, w, h, ray_origin, ray_direction);
-                float best_t = 1e30f;
-                int best_index = -1;
-                for (std::size_t i = 0; i < map_pieces.size(); ++i) {
-                    const auto& piece = map_pieces[i];
-                    if (!piece.visible) continue;
-                    const lolview::Vec3 center{piece.position.x + piece.center.x * piece.scale,
-                                               piece.position.y + piece.center.y * piece.scale,
-                                               piece.position.z + piece.center.z * piece.scale};
-                    const lolview::Vec3 to_center = center - ray_origin;
-                    const float t = to_center.x * ray_direction.x +
-                                    to_center.y * ray_direction.y +
-                                    to_center.z * ray_direction.z;
-                    if (t <= 0.0f) continue;
-                    const lolview::Vec3 closest{to_center.x - ray_direction.x * t,
-                                                to_center.y - ray_direction.y * t,
-                                                to_center.z - ray_direction.z * t};
-                    const float distance = lolview::length(closest);
-                    const float radius = std::max(piece.radius * piece.scale, 15.0f);
-                    if (distance <= radius && t < best_t) {
-                        best_t = t;
-                        best_index = static_cast<int>(i);
+
+                const auto hits = pick_pieces(map_pieces, ray_origin, ray_direction);
+                if (!hits.empty()) {
+                    // Clicking the already-selected piece steps to the next one
+                    // under the cursor, so overlapping pieces can be cycled.
+                    int next = hits.front().second;
+                    for (std::size_t h = 0; h < hits.size(); ++h) {
+                        if (hits[h].second == selected_piece) {
+                            next = hits[(h + 1) % hits.size()].second;
+                            break;
+                        }
                     }
-                }
-                if (best_index >= 0) {
-                    selected_piece = best_index;
-                    editor_status = "selected piece " + std::to_string(best_index);
+                    selected_piece = next;
+                    editor_status = "selected " + std::to_string(next) + " (" +
+                                    std::to_string(hits.size()) + " under cursor)";
+                } else {
+                    editor_status = "nothing under cursor";
                 }
             }
 
@@ -1937,60 +2019,7 @@ int main(int argc, char** argv) {
                                     IM_COL32(0, 0, 0, 90), 1.0f, true);
             }
 
-            // outline of the selected piece
-            if (selected_piece >= 0 && selected_piece < static_cast<int>(map_pieces.size())) {
-                const auto& piece = map_pieces[selected_piece];
-                const lolview::Mat4 model =
-                    piece_matrix(piece.position, piece.center, piece.yaw, piece.scale);
-                lolview::Vec3 corners[8];
-                for (int i = 0; i < 8; ++i) {
-                    const lolview::Vec3 local{(i & 1) ? piece.bounds_max.x : piece.bounds_min.x,
-                                              (i & 2) ? piece.bounds_max.y : piece.bounds_min.y,
-                                              (i & 4) ? piece.bounds_max.z : piece.bounds_min.z};
-                    corners[i] = transform_point(model, local);
-                }
-                float sx[8] = {0.0f};
-                float sy[8] = {0.0f};
-                bool valid[8] = {false};
-                for (int i = 0; i < 8; ++i) {
-                    valid[i] = project_to_screen(view, proj, corners[i], w, h, sx[i], sy[i]);
-                }
-                static const int edges[12][2] = {{0, 1}, {1, 3}, {3, 2}, {2, 0}, {4, 5}, {5, 7},
-                                                 {7, 6}, {6, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-                (void)edges;
-
-                // Screen-space brackets: readable even when a piece spans the map.
-                float min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
-                int visible_corners = 0;
-                for (int i = 0; i < 8; ++i) {
-                    if (!valid[i]) continue;
-                    min_x = std::min(min_x, sx[i]);
-                    min_y = std::min(min_y, sy[i]);
-                    max_x = std::max(max_x, sx[i]);
-                    max_y = std::max(max_y, sy[i]);
-                    ++visible_corners;
-                }
-                if (visible_corners > 0) {
-                    const float pad = 5.0f;
-                    min_x = std::clamp(min_x - pad, 0.0f, static_cast<float>(w) - 1.0f);
-                    min_y = std::clamp(min_y - pad, 0.0f, static_cast<float>(h) - 1.0f);
-                    max_x = std::clamp(max_x + pad, 0.0f, static_cast<float>(w) - 1.0f);
-                    max_y = std::clamp(max_y + pad, 0.0f, static_cast<float>(h) - 1.0f);
-                    const ImU32 color = IM_COL32(120, 240, 160, 240);
-                    draw->AddRect(ImVec2(min_x, min_y), ImVec2(max_x, max_y),
-                                  IM_COL32(120, 240, 160, 70), 0.0f, 0, 1.0f);
-                    const float len = std::min(20.0f, (max_x - min_x) * 0.25f);
-                    const float len_y = std::min(20.0f, (max_y - min_y) * 0.25f);
-                    draw->AddLine(ImVec2(min_x, min_y), ImVec2(min_x + len, min_y), color, 2.0f);
-                    draw->AddLine(ImVec2(min_x, min_y), ImVec2(min_x, min_y + len_y), color, 2.0f);
-                    draw->AddLine(ImVec2(max_x, min_y), ImVec2(max_x - len, min_y), color, 2.0f);
-                    draw->AddLine(ImVec2(max_x, min_y), ImVec2(max_x, min_y + len_y), color, 2.0f);
-                    draw->AddLine(ImVec2(min_x, max_y), ImVec2(min_x + len, max_y), color, 2.0f);
-                    draw->AddLine(ImVec2(min_x, max_y), ImVec2(min_x, max_y - len_y), color, 2.0f);
-                    draw->AddLine(ImVec2(max_x, max_y), ImVec2(max_x - len, max_y), color, 2.0f);
-                    draw->AddLine(ImVec2(max_x, max_y), ImVec2(max_x, max_y - len_y), color, 2.0f);
-                }
-            }
+            // (selection highlight is drawn as a red wireframe in the 3D pass)
 
             // move-target marker
             if (has_move_target) {

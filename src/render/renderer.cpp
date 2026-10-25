@@ -646,8 +646,7 @@ void Renderer::render_skn(const Skn& mesh, const TexImage* texture,
     glDeleteTextures(1, &color);
 }
 
-int Renderer::cache_mesh(const Skn& mesh) {
-    const auto existing = impl_->mesh_ids.find(&mesh);
+int Renderer::cache_mesh(const Skn& mesh) {    const auto existing = impl_->mesh_ids.find(&mesh);
     if (existing != impl_->mesh_ids.end()) return existing->second;
 
     std::vector<Vertex> vertices;
@@ -784,6 +783,40 @@ void Renderer::draw_cached(int mesh_id, int texture_id, const Mat4& model, const
         glDisable(GL_BLEND);
         glDepthMask(GL_TRUE);
     }
+}
+
+void Renderer::draw_wireframe(int mesh_id, const Mat4& model, const Mat4& view,
+                              const Mat4& proj, int width, int height, const Vec3& color) {
+    if (mesh_id < 0 || mesh_id >= static_cast<int>(impl_->meshes.size())) return;
+    const auto& cached = impl_->meshes[static_cast<std::size_t>(mesh_id)];
+
+    glViewport(0, 0, width, height);
+    // Selection outline is an overlay: never let the surface hide it.
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_FALSE);
+
+    const Mat4 mvp = proj * view * model;
+    gl::UseProgram(impl_->program);
+    gl::UniformMatrix4fv(gl::GetUniformLocation(impl_->program, "u_mvp"), 1, 0, mvp.data());
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_skinned"), 0);
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_use_texture"), 0);
+    gl::Uniform1i(gl::GetUniformLocation(impl_->program, "u_alpha_mode"), 0);
+    gl::Uniform3f(gl::GetUniformLocation(impl_->program, "u_color"), color.x, color.y,
+                  color.z);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    gl::BindVertexArray(cached.vao);
+    for (const auto& range : cached.ranges) {
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(range.count), GL_UNSIGNED_INT,
+                       reinterpret_cast<const void*>(
+                           static_cast<std::uintptr_t>(range.start_index) * sizeof(std::uint32_t)));
+    }
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
 }
 
 }  // namespace lolview
