@@ -1617,6 +1617,9 @@ int main(int argc, char** argv) {
         bool connected = false;
         std::uint16_t local_player = 0;
         std::uint16_t own_unit = 0;
+        // Where the host says our unit is; the camera glides towards this instead
+        // of snapping to each 20 Hz snapshot.
+        lolview::Vec3 own_target_position = spawn;
         std::vector<std::string> net_models;
         struct RemoteUnit {
             std::uint16_t id = 0;
@@ -2135,7 +2138,27 @@ int main(int argc, char** argv) {
             // ---- camera yaw is stepped from key events (45 degrees) ----
             // ---- movement ----
             bool moving = false;
-            if (has_move_target && attack_hold <= 0.0f && !connected) {
+            if (connected) {
+                // Glide towards the authoritative position, turn to face travel
+                // and run the walk clip so remote movement does not look frozen.
+                const lolview::Vec3 delta = own_target_position - champion_position;
+                const float distance = lolview::length(delta);
+                if (distance > 2.0f) {
+                    const lolview::Vec3 direction = delta * (1.0f / distance);
+                    // Speed up when far behind so corrections are not sluggish.
+                    const float speed = std::max(420.0f, distance * 6.0f);
+                    champion_position =
+                        champion_position + direction * std::min(distance, speed * dt);
+                    const float target_yaw = std::atan2(direction.x, direction.z);
+                    float difference = target_yaw - champion_yaw;
+                    while (difference > 3.14159265f) difference -= 6.2831853f;
+                    while (difference < -3.14159265f) difference += 6.2831853f;
+                    champion_yaw += difference * std::min(1.0f, 16.0f * dt);
+                    moving = true;
+                } else {
+                    champion_position = own_target_position;
+                }
+            } else if (has_move_target && attack_hold <= 0.0f) {
                 lolview::Vec3 delta = move_target - champion_position;
                 delta.y = 0.0f;
                 const float distance = lolview::length(delta);
@@ -2208,13 +2231,17 @@ int main(int argc, char** argv) {
             } else if (moving) {
                 // Two walk cycles per weapon, alternated each time one starts.
                 desired = (walk_variant % 2 == 0) ? "run" : "run2";
+            } else if (current_clip.rfind("idle", 0) == 0) {
+                desired = current_clip;  // let the clip finish instead of cycling
             } else {
                 desired = "idle" + std::to_string(1 + (idle_variant % 3));
+                ++idle_variant;
             }
             if (desired != current_clip) {
                 current_clip = desired;
                 clip_time = 0.0f;
-                if (desired.rfind("idle", 0) == 0) ++idle_variant;
+                std::printf("  anim    : %s\n", desired.c_str());
+
 
                 // Spell and attack actions must stay locked for the clip length,
                 // which lives in the compressed table for most champions.
@@ -2420,7 +2447,7 @@ int main(int argc, char** argv) {
                 // The host owns movement: follow the position it reports for us.
                 for (const auto& remote : remote_units) {
                     if (remote.id != own_unit) continue;
-                    champion_position = lolview::Vec3{remote.x, spawn.y, remote.z};
+                    own_target_position = lolview::Vec3{remote.x, spawn.y, remote.z};
                     break;
                 }
 
