@@ -87,7 +87,9 @@ casts, and a League-style HUD with the champion's own ability icons.
 | mouse wheel | zoom |
 | `Y` | toggle camera lock |
 | `SPACE` | re-centre and lock |
+| `-` / `+` | rotate the camera 45° per press |
 | `F2` | editor mode: free-fly camera (WASD, Space/Ctrl, Shift boost, right-drag look) plus the editor window |
+| `Ctrl+Z` | undo the last piece transform (editor) |
 | `ESC` | quit |
 
 The HUD draws the real ability icons, cooldown timers, champion health/mana,
@@ -102,10 +104,12 @@ With `--map`, the whole Rift is loaded as 586 individually editable pieces
 (textured from the map archive, cached on the GPU). The "Map editor" window lets
 you:
 
-- pick a piece from the searchable list, or click it in the world
+- pick a piece from the searchable list, or click it in the world (clicking only
+  selects while editor mode is active)
 - move it (`move`), rotate it (`yaw`) and scale it (`scale`) — rotation and
   scaling pivot around the piece's own centre
 - hide pieces, reset one piece or everything
+- **Ctrl+Z** undoes transform changes (200-step history)
 - **Save scene** to a text file (`--scene path`, default `scenes/map.scene`)
   with one line per piece: `index px py pz yaw_degrees scale visible`
 

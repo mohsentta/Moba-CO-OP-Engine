@@ -1159,6 +1159,62 @@ int main(int argc, char** argv) {
             editor_status = "loaded " + std::to_string(applied) + " pieces from " + scene_path;
         };
 
+        // ---- undo history for piece transforms (Ctrl+Z) ----
+        struct Snapshot {
+            std::vector<lolview::Vec3> positions;
+            std::vector<float> yaws;
+            std::vector<float> scales;
+            std::vector<std::uint8_t> visible;
+        };
+        const auto capture_snapshot = [&]() {
+            Snapshot snapshot;
+            snapshot.positions.reserve(map_pieces.size());
+            snapshot.yaws.reserve(map_pieces.size());
+            snapshot.scales.reserve(map_pieces.size());
+            snapshot.visible.reserve(map_pieces.size());
+            for (const auto& piece : map_pieces) {
+                snapshot.positions.push_back(piece.position);
+                snapshot.yaws.push_back(piece.yaw);
+                snapshot.scales.push_back(piece.scale);
+                snapshot.visible.push_back(piece.visible ? 1 : 0);
+            }
+            return snapshot;
+        };
+        const auto apply_snapshot = [&](const Snapshot& snapshot) {
+            const std::size_t count = std::min(map_pieces.size(), snapshot.positions.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                auto& piece = map_pieces[i];
+                piece.position = snapshot.positions[i];
+                piece.yaw = snapshot.yaws[i];
+                piece.scale = snapshot.scales[i];
+                piece.visible = snapshot.visible[i] != 0;
+            }
+        };
+        std::vector<Snapshot> history;
+        std::size_t history_index = 0;
+        const auto commit_history = [&]() {
+            if (history_index + 1 < history.size()) {
+                history.resize(history_index + 1);
+            }
+            history.push_back(capture_snapshot());
+            history_index = history.size() - 1;
+            if (history.size() > 200) {
+                history.erase(history.begin());
+                history_index = history.size() - 1;
+            }
+        };
+        const auto undo_last = [&]() {
+            if (history.empty() || history_index == 0) {
+                editor_status = "nothing to undo";
+                return;
+            }
+            --history_index;
+            apply_snapshot(history[history_index]);
+            editor_status = "undo " + std::to_string(history_index) + " / " +
+                            std::to_string(history.size() - 1);
+        };
+        if (!map_pieces.empty()) history.push_back(capture_snapshot());
+
         load_scene();
         if (args.save_scene_on_start) {
             for (auto& piece : map_pieces) {
@@ -1324,6 +1380,17 @@ int main(int argc, char** argv) {
                             // League's stop command (free camera uses S to fly back).
                             if (!free_mode) has_move_target = false;
                             break;
+                        case SDL_SCANCODE_MINUS:
+                        case SDL_SCANCODE_KP_MINUS:
+                            if (!free_mode) camera.yaw -= kPi / 4.0f;
+                            break;
+                        case SDL_SCANCODE_EQUALS:
+                        case SDL_SCANCODE_KP_PLUS:
+                            if (!free_mode) camera.yaw += kPi / 4.0f;
+                            break;
+                        case SDL_SCANCODE_Z:
+                            if ((SDL_GetModState() & SDL_KMOD_CTRL) != 0) undo_last();
+                            break;
                         case SDL_SCANCODE_F2: {
                             // F2 opens the editor: free-fly camera plus the
                             // editor window. Pressing it again returns to play.
@@ -1387,21 +1454,7 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // ---- camera yaw: hold - / + to orbit the view around the champion ----
-            if (!free_mode) {
-                const bool* keys = SDL_GetKeyboardState(nullptr);
-                bool changed = false;
-                if (keys[SDL_SCANCODE_MINUS] || keys[SDL_SCANCODE_KP_MINUS]) {
-                    camera.yaw -= 1.6f * dt;
-                    changed = true;
-                }
-                if (keys[SDL_SCANCODE_EQUALS] || keys[SDL_SCANCODE_KP_PLUS]) {
-                    camera.yaw += 1.6f * dt;
-                    changed = true;
-                }
-                (void)changed;
-            }
-
+            // ---- camera yaw is stepped from key events (45 degrees) ----
             // ---- movement ----
             bool moving = false;
             if (has_move_target) {
@@ -1553,8 +1606,8 @@ int main(int argc, char** argv) {
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
-            // Click in the world selects a piece (unless the editor has the mouse).
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+            // Click in the world selects a piece, but only while editing.
+            if (editor_mode && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
                 !ImGui::GetIO().WantCaptureMouse && !map_pieces.empty()) {
                 float mouse_x = 0.0f, mouse_y = 0.0f;
                 SDL_GetMouseState(&mouse_x, &mouse_y);
@@ -1761,6 +1814,7 @@ int main(int argc, char** argv) {
                         piece.scale = 1.0f;
                         piece.visible = true;
                     }
+                    commit_history();
                     editor_status = "reset all pieces";
                 }
                 ImGui::InputText("filter", piece_filter, sizeof(piece_filter));
@@ -1791,13 +1845,17 @@ int main(int argc, char** argv) {
                     auto& piece = map_pieces[selected_piece];
                     ImGui::TextWrapped("%s", piece.material.c_str());
                     ImGui::DragFloat3("move", &piece.position.x, 5.0f);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) commit_history();
                     ImGui::DragFloat("yaw", &piece.yaw, 0.5f, -180.0f, 180.0f);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) commit_history();
                     ImGui::DragFloat("scale", &piece.scale, 0.02f, 0.05f, 20.0f);
-                    ImGui::Checkbox("visible", &piece.visible);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) commit_history();
+                    if (ImGui::Checkbox("visible", &piece.visible)) commit_history();
                     if (ImGui::Button("reset piece")) {
                         piece.position = piece.initial_position;
                         piece.yaw = piece.initial_yaw;
                         piece.scale = 1.0f;
+                        commit_history();
                     }
                 } else {
                     ImGui::TextUnformatted("click a piece in the world, or pick from the list");
