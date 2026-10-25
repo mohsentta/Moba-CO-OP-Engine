@@ -1,0 +1,23 @@
+[package]
+name = "replay_player_2"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the League of Legends replay playback path, with game-asset model loading"
+
+[[bin]]
+name = "replay_player_2"
+path = "src/main.rs"
+
+[[bin]]
+name = "wadprobe"
+path = "src/bin/wadprobe.rs"
+
+[dependencies]
+# pure-Rust zstd (offline cache only)
+ruzstd = "0.9.1"
+# xxHash64 (WAD chunk paths) and XXH3-64 (WAD chunk checksums)
+twox-hash = { version = "2.1.5", default-features = false, features = ["xxhash64", "xxhash3_64", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = true

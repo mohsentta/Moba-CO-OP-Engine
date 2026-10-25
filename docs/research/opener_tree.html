@@ -1,0 +1,525 @@
+?<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ROFL opener — data flow tree</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#111826; --ink:#d7e0ee; --dim:#8fa1bb;
+    --entry:#1d4ed8; --step:#0f766e; --branch:#b45309; --error:#b91c1c;
+    --data:#6d28d9; --vector:#065f46; --out:#334155;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:13px/1.35 ui-sans-serif,system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
+  #app{position:fixed;inset:0}
+  svg{display:block;width:100%;height:100%;cursor:grab}
+  svg.panning{cursor:grabbing}
+  .hud{position:fixed;left:14px;top:12px;z-index:5;pointer-events:none}
+  .hud h1{margin:0;font-size:15px;letter-spacing:.2px}
+  .hud p{margin:4px 0 0;color:var(--dim);font-size:11.5px}
+  .bar{position:fixed;left:14px;bottom:12px;z-index:5;display:flex;gap:6px;flex-wrap:wrap}
+  .bar button{background:#172033;color:var(--ink);border:1px solid #26324a;border-radius:6px;
+    padding:6px 10px;font-size:12px;cursor:pointer}
+  .bar button:hover{background:#1d2940}
+  .legend{position:fixed;right:14px;top:12px;z-index:5;background:rgba(17,24,38,.86);
+    border:1px solid #26324a;border-radius:8px;padding:8px 10px;font-size:11.5px}
+  .legend div{display:flex;align-items:center;gap:7px;margin:3px 0}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  #details{position:fixed;right:14px;bottom:12px;width:390px;max-height:52vh;overflow:auto;
+    background:rgba(17,24,38,.96);border:1px solid #26324a;border-radius:10px;padding:12px 14px;
+    z-index:6;display:none}
+  #details h2{margin:0 0 4px;font-size:14px}
+  #details .sub{color:var(--dim);font-size:11.5px;margin-bottom:8px}
+  #details p{margin:6px 0;font-size:12px}
+  #details pre{background:#0a0f1a;border:1px solid #1f2a3e;border-radius:6px;padding:8px;
+    font-size:11px;overflow:auto;color:#cfe3ff}
+  #details .close{position:absolute;right:10px;top:8px;cursor:pointer;color:var(--dim)}
+  .node{cursor:pointer}
+  .node rect{stroke:#0a0f1a;stroke-width:1.5;rx:8}
+  .node .nt{font:600 15px/1.25 ui-sans-serif,system-ui,"Segoe UI",sans-serif;fill:#fff}
+  .node .ns{font:12.5px/1.25 ui-sans-serif,system-ui,"Segoe UI",sans-serif;fill:rgba(255,255,255,.82)}
+  .node.dim{opacity:1}
+  .node.sel rect{stroke:#fbbf24;stroke-width:2.5}
+  .edge{fill:none;stroke:#2a3850;stroke-width:1.6}
+  .edge.dotted{stroke:#7c93b5;stroke-dasharray:5 5;stroke-width:1.5}
+  .edge.path{stroke:#fbbf24;stroke-width:2.4}
+  .elabel{font:10.5px ui-sans-serif,system-ui,sans-serif;fill:#7e93b3}
+  .k-entry rect{fill:var(--entry)} .k-step rect{fill:var(--step)}
+  .k-branch rect{fill:var(--branch)} .k-error rect{fill:var(--error)}
+  .k-data rect{fill:var(--data)} .k-vector rect{fill:var(--vector)}
+  .k-out rect{fill:var(--out)}
+</style>
+</head>
+<body>
+<div id="app">
+  <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+    <g id="viewport">
+      <g id="edges"></g>
+      <g id="nodes"></g>
+    </g>
+  </svg>
+</div>
+
+<div class="hud">
+  <h1>ROFL opener — what happens to the data</h1>
+  <p>drag to pan · wheel to zoom · click a node for details · double-click to collapse a subtree</p>
+</div>
+
+<div class="legend">
+  <div><span class="dot" style="background:var(--entry)"></span>entry</div>
+  <div><span class="dot" style="background:var(--step)"></span>processing step</div>
+  <div><span class="dot" style="background:var(--branch)"></span>branch / decision</div>
+  <div><span class="dot" style="background:var(--error)"></span>error path</div>
+  <div><span class="dot" style="background:var(--data)"></span>bytes on disk</div>
+  <div><span class="dot" style="background:var(--vector)"></span>in-memory vector</div>
+  <div><span class="dot" style="background:var(--out)"></span>final object</div>
+</div>
+
+<div class="bar">
+  <button id="fit">Fit</button>
+  <button id="reset">Reset view</button>
+  <button id="expand">Expand all</button>
+  <button id="collapse">Collapse all</button>
+</div>
+
+<div id="details">
+  <span class="close" id="dclose">✕</span>
+  <h2 id="dtitle"></h2>
+  <div class="sub" id="dsub"></div>
+  <div id="dbody"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- the tree ---------- */
+/* kind: entry | step | branch | error | data | vector | out */
+const TREE = {
+  id:"file", kind:"entry", title:"open .rofl",
+  sub:"path → whole file in RAM",
+  detail:`<p>The engine is handed a replay path. <code>sub_6b1b60</code> sets the replay state to 6 (“loading”), opens the file, asks the OS for its size, allocates a buffer of exactly that size and reads everything in one go. State becomes 7 (“parsed”).</p><p>No streaming, no memory mapping: the entire file is resident from here on.</p>
+  <pre>state = 6
+f = open(path)
+size = filesize(f)
+buf = alloc(size)
+read(f, buf, size)
+state = 7</pre>`,
+  children:[
+    { id:"read", kind:"step", title:"read the file",
+      sub:"open · size · read · close",
+      detail:`<p>Four failures are possible and all of them end the load with a log line and no parse:</p>
+      <pre>if open fails        → error
+if size == 0         → error
+if read != size      → error
+if size &lt; 6          → error “too small”</pre>`,
+      children:[
+        { id:"e_open", kind:"error", title:"open / read fail",
+          sub:"error, state stays 6", detail:`<p>The file never becomes a replay object. Nothing else runs.</p>` }
+      ]},
+    { id:"hdr", kind:"step", title:"6-byte header",
+      sub:"“RIOT” + u16 format",
+      detail:`<p>The first six bytes are copied into a small struct and inspected:</p>
+      <pre>bytes 0..4  "RIOT"
+bytes 4..6  u16 format</pre>
+      <p>The magic is checked first; a non-RIOT file is rejected immediately. The format word is the fork in the road.</p>`,
+      children:[
+        { id:"e_magic", kind:"error", title:"magic ≠ RIOT", sub:"reject", detail:`<p>Not a replay at all. No further reads.</p>` },
+        { id:"fmt2", kind:"branch", title:"format == 2 ?", sub:"modern vs legacy container",
+          edgeLabel:"modern path",
+          detail:`<p>Format 2 is the shipping container since 15.x. Anything else falls into an inline legacy parser kept for old replays.</p>
+          <pre>if format == 2:
+    Replay_LoadChunks(replay, buf+6, eof)
+else:
+    legacy_inline(buf+6, eof)</pre>`,
+          children:[
+            { id:"footer", kind:"step", title:"footer_len @ EOF−4",
+              sub:"read the container backwards",
+              detail:`<p>The modern container is written from both ends toward the middle. The loader starts at the end:</p>
+              <pre>if (end - data) &lt; 4        → error
+footer_len = u32 at end-4
+if footer_len &gt; (end-data)  → error
+footer_start = end - 4 - footer_len
+if footer_start - data &lt; 0x100 → error
+sig_start = footer_start - 0x100</pre>
+              <p>The last four bytes are a length; before them is the JSON footer; before that sit exactly 256 bytes of signature.</p>`,
+              children:[
+                { id:"e_foot", kind:"error", title:"footer out of range", sub:"error, no parse", detail:`<p>A truncated or corrupt tail is refused before anything is decompressed.</p>` },
+                { id:"jf", kind:"data", title:"JSON footer",
+                  sub:"match id · gameLength · keyframes · stats",
+                  detail:`<p>The footer is plain JSON, not compressed: <code>gameLength</code>, <code>lastGameChunkId</code>, <code>lastKeyFrameId</code>, <code>statsJson</code>. The loader keeps it as text for the client; the chunk walker does not need it.</p>` },
+                { id:"sig", kind:"data", title:"256-byte signature",
+                  sub:"integrity block", detail:`<p>Exactly 0x100 bytes immediately before the footer JSON. It is the value the hash is compared against.</p>` },
+                { id:"verify", kind:"step", title:"verify signature",
+                  sub:"keyed hash over the chunk region",
+                  detail:`<p>The game hashes everything from <code>data</code> to <code>sig_start</code> — all chunks, but not the signature or footer — then compares against the 256-byte block.</p>
+                  <pre>h = hash_create(key)
+hash_update(h, data, sig_start-data)
+ok = hash_final_compare(h, sig)</pre>`,
+                  children:[
+                    { id:"e_sig", kind:"error", title:"signature mismatch",
+                      sub:"log + abort", detail:`<p>A single changed byte in any chunk makes the hash differ and the replay is refused before a single block is parsed.</p>` }
+                  ]},
+                { id:"pre", kind:"step", title:"8-byte preamble",
+                  sub:"u64 → replay+0x88", detail:`<p>Eight bytes right after the 6-byte header are copied verbatim into the replay object at <code>+0x88</code>. It is a 64-bit file timestamp, not a chunk count.</p>` },
+                { id:"ver", kind:"branch", title:"version string?",
+                  sub:"u8 len + bytes → +0x68",
+                  detail:`<pre>if sig_start != data + 8:
+    len = u8 at data+8
+    string = bytes[data+9 .. data+9+len]
+    replay[+0x68] = string
+    cursor = data + 9 + len
+else:
+    cursor = data + 8     // no string</pre>
+                  <p>Two branches, because a replay without a version string is legal.</p>`,
+                  children:[
+                    { id:"ver_yes", kind:"step", title:"version present", sub:"e.g. “16.21.829.8620”", detail:`<p>The client shows it; tools pick a parser by it. It is also the only human-readable text in the container besides the footer.</p>` },
+                    { id:"ver_no", kind:"branch", title:"no string", sub:"cursor jumps straight to chunks", detail:`<p>The 8-byte preamble is followed immediately by the first chunk header.</p>` }
+                  ]},
+                { id:"loop", kind:"step", title:"chunk loop",
+                  sub:"while cursor + 0x11 < sig_start",
+                  detail:`<p>The rest of the file is a flat chain of chunks. One cursor walks it; before every read the remaining space is checked.</p>
+                  <pre>while cursor + 0x11 &lt; sig_start:
+    if sig_start - cursor &lt; 0x12:
+        error “truncated chunk header”
+    hdr = read 18 bytes
+    cursor += 18
+    if cursor &gt;= sig_start: break
+    … build record …</pre>`,
+                  children:[
+                    { id:"e_hdr", kind:"error", title:"header truncated", sub:"error, stop", detail:`<p>Fewer than 18 bytes remain before the signature: the chain is cut.</p>` },
+                    { id:"chdr", kind:"step", title:"18-byte chunk header",
+                      sub:"id · time · kind · usize · csize · tag",
+                      detail:`<pre>u32 id
+u32 time
+u8  kind        // 2 keyframe, 3/4 boundaries, else game data
+u32 usize
+u32 csize       // 0 = stored
+u8  tag</pre>
+                      <p>Before decompressing, the id updates a min/max range map at <code>+0x58</code> (keyframes keep both ends, other chunks keep the max). That map is what seek uses later.</p>` },
+                    { id:"kind", kind:"branch", title:"kind == 2 ?",
+                      sub:"keyframe or game data", edgeLabel:"dispatch",
+                      detail:`<p>The same decompress-and-build path is used for both, but the destination vector differs and the failure message differs.</p>`,
+                      children:[
+                        { id:"kf", kind:"vector", title:"keyframe → +0x18",
+                          sub:"count at +0x20",
+                          detail:`<pre>ok = DecompressChunk(replay, rec, &cursor, sig_start)
+if !ok: error “keyframe decompression failed”; free; stop
+BuildRecord(replay, rec)
+vector[+0x18].push(rec); count[+0x20]++</pre>`,
+                          children:[
+                            { id:"e_kf", kind:"error", title:"keyframe decompress fail", sub:"abort this chunk", detail:`<p>Logged separately from game-chunk failures so the cause is visible in the replay log.</p>` }
+                          ]},
+                        { id:"gd", kind:"vector", title:"game data → +0x08",
+                          sub:"count at +0x10",
+                          detail:`<pre>ok = DecompressChunk(replay, rec, &cursor, sig_start)
+if !ok: error “chunk decompression failed”; free; stop
+if kind == 3: replay[+0x50] = id
+if kind == 4: replay[+0x54] = id
+BuildRecord(replay, rec)
+vector[+0x08].push(rec); count[+0x10]++</pre>`,
+                          children:[
+                            { id:"e_g", kind:"error", title:"game decompress fail", sub:"abort this chunk", detail:`<p>Everything appended before the bad chunk stays in the vector; the replay is left partially loaded.</p>` }
+                          ]}
+                      ]},
+                    { id:"dec", kind:"branch", title:"compression?",
+                      sub:"csize == 0 ? stored : zstd",
+                      detail:`<pre>if csize == 0:
+    copy usize bytes verbatim
+else:
+    ZSTD_decompress(csize → usize)
+    fail on error or size mismatch</pre>
+                      <p>Each chunk is either stored or a single zstd frame. This is where the payload leaves the file and becomes a byte buffer in memory.</p>` }
+                  ]},
+                { id:"post", kind:"step", title:"derive end time",
+                  sub:"from the last record, not the footer",
+                  detail:`<pre>if game_count != 0:
+    last = game_vector[game_count-1]
+    replay[+0x40] = last.time</pre>
+                  <p>The same idea is applied to the keyframe vector. A replay whose footer disagrees with its chunks still plays to the chunk-derived end.</p>` }
+              ]},
+            { id:"legacy", kind:"branch", title:"format != 2",
+              sub:"legacy inline path", edgeLabel:"old container",
+              detail:`<p>Pre-2.0 replays are parsed inline, with a different packaging:</p>
+              <pre>256-byte signature at data+6
+zlib inflate (window 0x126)
+0x14-byte block verified
+0x1a-byte header + length-prefixed string
+0x42-byte block: two counts + time/16
+0x11-byte index table
+0x48-byte records, 1 MB buffers</pre>
+              <p>Same destination, different packaging. No 16.x replay takes this branch.</p>`,
+              children:[
+                { id:"leg1", kind:"step", title:"signature + inflate", sub:"zlib, not zstd", detail:`<p>The legacy container compresses its index with zlib and stores the same 256-byte signature block at the front.</p>` },
+                { id:"leg2", kind:"step", title:"0x1a header + string", sub:"version text", detail:`<p>A small fixed header followed by the same kind of length-prefixed version string.</p>` },
+                { id:"leg3", kind:"step", title:"0x42 block", sub:"counts + time/16", detail:`<p>Two 32-bit counts, one time value scaled by 1/16, and a length byte with payload.</p>` },
+                { id:"leg4", kind:"step", title:"index table", sub:"0x11-byte entries → 0x48 records", detail:`<p>Instead of a chain, an index table points at records; each record is read, decompressed and built the same way.</p>` }
+              ]}
+          ]}
+      ]},
+    { id:"out", kind:"out", title:"replay object",
+      sub:"two record vectors + timings",
+      edgeLabel:"result",
+      detail:`<p>On success the loader hands back an object that no longer resembles a file at all.</p>`,
+      children:[
+        { id:"ofields", kind:"data", title:"fields",
+          sub:"+0x08 game · +0x18 keyframes · +0x40 end · +0x58 ranges · +0x68 version · +0x88 time",
+          detail:`<table style="font-size:11.5px;border-collapse:collapse">
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x08</td><td>game chunk records, count +0x10</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x18</td><td>keyframe chunk records, count +0x20</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x40</td><td>end time from the last game record</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x50 / +0x54</td><td>boundary chunk ids (kinds 3 and 4)</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x58</td><td>min/max chunk-id ranges</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x68</td><td>version string</td></tr>
+          <tr><td style="padding:2px 8px 2px 0;color:#8fa1bb">+0x88</td><td>8-byte file time</td></tr>
+          </table>
+          <p>Each 0x48-byte chunk record holds the header fields plus its decompressed payload. <code>Replay_BuildRecord</code> has already parsed that payload into blocks; the opener never looks inside the bit stream.</p>
+          <p>Later, the controller walks these vectors: <code>Replay_SeekTime</code> binary-searches, <code>Replay_PeekEvent</code> reads, <code>Replay_RunEventsUntilTime</code> dispatches up to the clock. That is where packets finally become state — not here.</p>` },
+        { id:"consumers", kind:"branch", title:"who reads these fields?",
+          sub:"readers traced in the decompile", dotted:true,
+          detail:`<p>Dotted = the field is consumed somewhere, but the exact reader was not pinned down. Solid = verified call.</p>`,
+          children:[
+            { id:"c_cur", kind:"step", title:"playback cursors",
+              sub:"+0x58 / +0x70 / +0x88 / +0xa0", dotted:true,
+              detail:`<p><code>Replay_ProcessEventsLoop2</code> seeks and peeks through four cursor structs on the replay object (0x18 bytes each). <code>Replay_SeekTime</code> binary-searches the event array behind a cursor and <code>Replay_RunEventsUntilTime</code> walks it.</p><p>Those are 0x18-byte event records, not the opener's 0x48-byte chunk records, so a converter must sit between them.</p>` },
+            { id:"c_tick", kind:"step", title:"controller tick",
+              sub:"sub_6be560 writes +0x40", dotted:true,
+              detail:`<p>The controller resets <code>+0x40</code> during a playback reset. It does not read the end time itself in the traced code.</p>` },
+            { id:"c_ui", kind:"step", title:"UI / timeline",
+              sub:"reads +0x40 (inferred)", dotted:true,
+              detail:`<p>No reader of <code>+0x40</code> exists inside the replay module, so the consumer is outside it (client timeline). Inferred, not verified.</p>` },
+            { id:"c_ver", kind:"step", title:"version string reader",
+              sub:"+0x68 (not found)", dotted:true,
+              detail:`<p>The version string is stored for the client and tools; no read was found in the game module, consistent with metadata use.</p>` },
+            { id:"c_bridge", kind:"error", title:"bridge not identified",
+              sub:"0x48 chunk records to 0x18 event records", dotted:true,
+              detail:`<p>The missing link: the opener appends 0x48-byte chunk records, while SeekTime/PeekEvent operate on 0x18-byte event records. The builder that converts one into the other has not been located, so the dotted edge points at the cursor machinery rather than a specific function.</p><p>Locating that builder is also the next step toward packet-level decoding.</p>` }
+          ]}
+      ]}
+  ]
+};
+
+/* ---------- config ---------- */
+const W = 300, GAPX = 58, GAPY = 12, PAD = 40;
+const nodesEl = document.getElementById("nodes");
+const edgesEl = document.getElementById("edges");
+const svg = document.getElementById("svg");
+const viewport = document.getElementById("viewport");
+const details = document.getElementById("details");
+
+let nodes = [];           // flat, with x/y/w/h
+let byId = new Map();
+let scale = 1, tx = 0, ty = 0;
+let selected = null;
+const collapsed = new Set();
+
+/* ---------- text metrics (rough but stable) ---------- */
+function wrapCount(s, chars){ return Math.max(1, Math.ceil((s||"").length / chars)); }
+function nodeHeight(n){
+  const t = wrapCount(n.title, 32);
+  const s = wrapCount(n.sub, 40);
+  return 18 + t*19 + s*16 + 10;
+}
+function nodeWidth(){ return W; }
+
+/* ---------- layout ---------- */
+function layout(n, depth, cursor){
+  n._depth = depth;
+  n.x = depth * (W + GAPX);
+  n.w = W;
+  n.h = nodeHeight(n);
+  const kids = (n.children||[]).filter(c => !collapsed.has(n.id));
+  const visibleKids = collapsed.has(n.id) ? [] : (n.children||[]);
+  if (!visibleKids.length){
+    n.y = cursor;
+    return cursor + n.h + GAPY;
+  }
+  let c = cursor;
+  for (const k of visibleKids){
+    c = layout(k, depth+1, c);
+  }
+  const first = visibleKids[0], last = visibleKids[visibleKids.length-1];
+  n.y = (first.y + first.h/2 + last.y + last.h/2)/2 - n.h/2;
+  return c;
+}
+
+function flatten(n, out){
+  out.push(n);
+  if (!collapsed.has(n.id)) (n.children||[]).forEach(c => flatten(c, out));
+  return out;
+}
+
+/* ---------- render ---------- */
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render(){
+  nodes = [];
+  layout(TREE, 0, PAD);
+  flatten(TREE, nodes);
+  byId = new Map(nodes.map(n => [n.id, n]));
+
+  edgesEl.innerHTML = "";
+  nodesEl.innerHTML = "";
+
+  const nodeEls = new Map();
+  for (const n of nodes){
+    const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+    g.setAttribute("class", "node k-" + n.kind);
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+    g.dataset.id = n.id;
+
+    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("width", n.w); r.setAttribute("height", n.h);
+    g.appendChild(r);
+
+    const fo = document.createElementNS("http://www.w3.org/2000/svg","foreignObject");
+    fo.setAttribute("x", 10); fo.setAttribute("y", 6);
+    fo.setAttribute("width", n.w-20); fo.setAttribute("height", n.h-12);
+    const d = document.createElement("div");
+    d.setAttribute("xmlns","http://www.w3.org/1999/xhtml");
+    d.style.cssText = "pointer-events:none;overflow:hidden";
+    d.innerHTML = `<div class="nt">${esc(n.title)}</div><div class="ns">${esc(n.sub)}</div>`;
+    fo.appendChild(d);
+    g.appendChild(fo);
+
+    g.addEventListener("click", ev => { ev.stopPropagation(); select(n.id); });
+    g.addEventListener("dblclick", ev => {
+      ev.stopPropagation();
+      if (collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id);
+      const keep = selected; render(); if (keep) select(keep);
+    });
+
+    nodesEl.appendChild(g);
+    nodeEls.set(n.id, g);
+  }
+
+  // edges
+  for (const n of nodes){
+    if (collapsed.has(n.id)) continue;
+    for (const k of (n.children||[])){
+      const x1 = n.x + n.w, y1 = n.y + n.h/2;
+      const x2 = k.x, y2 = k.y + k.h/2;
+      const dx = Math.max(24, (x2-x1)*0.55);
+      const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p.setAttribute("class","edge" + (k.dotted ? " dotted" : ""));
+      p.setAttribute("d", `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`);
+      p.dataset.from = n.id; p.dataset.to = k.id;
+      edgesEl.appendChild(p);
+
+      if (k.edgeLabel){
+        const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+        t.setAttribute("class","elabel");
+        t.setAttribute("x", (x1+x2)/2); t.setAttribute("y", (y1+y2)/2 - 5);
+        t.setAttribute("text-anchor","middle");
+        t.textContent = k.edgeLabel;
+        edgesEl.appendChild(t);
+      }
+    }
+  }
+}
+
+/* ---------- selection / path highlight ---------- */
+function select(id){
+  selected = id;
+  document.querySelectorAll(".node").forEach(e => e.classList.remove("sel","dim"));
+  document.querySelectorAll(".edge").forEach(e => e.classList.remove("path"));
+
+  const path = new Set();
+  let cur = byId.get(id);
+  // walk up using parent links
+  while (cur){
+    path.add(cur.id);
+    cur = nodes.find(n => (n.children||[]).some(c => c.id === cur.id));
+    if (cur && cur.id === id) break;
+  }
+  for (const n of nodes){
+    const el = document.querySelector(`.node[data-id="${CSS.escape(n.id)}"]`);
+    if (!el) continue;
+    if (path.has(n.id)) el.classList.add("sel");
+  }
+  document.querySelectorAll(".edge").forEach(e => {
+    if (path.has(e.dataset.to) && path.has(e.dataset.from)) e.classList.add("path");
+  });
+
+  const n = byId.get(id);
+  document.getElementById("dtitle").textContent = n.title;
+  document.getElementById("dsub").textContent = n.sub;
+  document.getElementById("dbody").innerHTML = n.detail || "<p>No detail.</p>";
+  details.style.display = "block";
+}
+
+document.getElementById("dclose").addEventListener("click", () => {
+  details.style.display = "none";
+  selected = null;
+  document.querySelectorAll(".node").forEach(e => e.classList.remove("sel","dim"));
+  document.querySelectorAll(".edge").forEach(e => e.classList.remove("path"));
+});
+
+/* ---------- pan / zoom ---------- */
+function apply(){
+  viewport.setAttribute("transform", `translate(${tx},${ty}) scale(${scale})`);
+}
+let panning = false, lastX = 0, lastY = 0, moved = 0;
+svg.addEventListener("pointerdown", e => {
+  if (e.target.closest(".node")) return;
+  panning = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
+  svg.classList.add("panning");
+  svg.setPointerCapture(e.pointerId);
+});
+svg.addEventListener("pointermove", e => {
+  if (!panning) return;
+  tx += e.clientX - lastX; ty += e.clientY - lastY;
+  moved += Math.abs(e.clientX-lastX) + Math.abs(e.clientY-lastY);
+  lastX = e.clientX; lastY = e.clientY;
+  apply();
+});
+svg.addEventListener("pointerup", e => {
+  panning = false; svg.classList.remove("panning");
+  try { svg.releasePointerCapture(e.pointerId); } catch(_){}
+});
+svg.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const wx = (mx - tx)/scale, wy = (my - ty)/scale;
+  const k = e.deltaY < 0 ? 1.12 : 1/1.12;
+  scale = Math.min(2.6, Math.max(0.12, scale*k));
+  tx = mx - wx*scale; ty = my - wy*scale;
+  apply();
+}, {passive:false});
+
+function fit(){
+  const xs = nodes.map(n=>n.x), ys = nodes.map(n=>n.y);
+  const x0 = Math.min(...xs), y0 = Math.min(...ys);
+  const x1 = Math.max(...nodes.map(n=>n.x+n.w));
+  const y1 = Math.max(...nodes.map(n=>n.y+n.h));
+  const r = svg.getBoundingClientRect();
+  const s = Math.min((r.width-40)/(x1-x0), (r.height-120)/(y1-y0), 1.15);
+  scale = Math.max(0.12, s);
+  tx = 20 - x0*scale;
+  ty = 70 - y0*scale;
+  apply();
+}
+
+document.getElementById("fit").onclick = fit;
+document.getElementById("reset").onclick = () => {
+  collapsed.clear(); selected = null; details.style.display = "none";
+  render(); fit();
+};
+document.getElementById("expand").onclick = () => { collapsed.clear(); render(); fit(); };
+document.getElementById("collapse").onclick = () => {
+  const walk = n => { if ((n.children||[]).length){ collapsed.add(n.id); (n.children||[]).forEach(walk); } };
+  walk(TREE); render(); fit();
+};
+
+/* ---------- boot ---------- */
+render();
+fit();
+select("file");
+</script>
+</body>
+</html>
+
+
+
+

@@ -1,0 +1,31 @@
+﻿# Builds
+build/
+out/
+cmake-build-*/
+.vs/
+CMakeUserPresets.json
+
+# Local, never committed (replays, toolchain, old git bundle)
+_local/
+
+# Game assets and derived data must never enter the repository
+assets/
+*.rofl
+*.wad
+*.wad.client
+*.skn
+*.skl
+*.anm
+*.dds
+*.bin
+
+# Legacy leftovers, if any survive
+src_organized/
+old/
+wad_data/
+tools/
+player/
+replay player 2/
+ui_dds/
+*.pkl
+*.exe
