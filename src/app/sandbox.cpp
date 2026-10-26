@@ -1742,6 +1742,13 @@ int main(int argc, char** argv) {
         };
         std::vector<Beam> beams;
         std::string last_own_anim = "idle1";
+        // The line-spell beam is Jinx's W; other champions must not borrow it.
+        const auto is_jinx = [](std::string name) {
+            std::transform(name.begin(), name.end(), name.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return name.find("jinx") != std::string::npos;
+        };
+        const bool own_champion_has_beam = is_jinx(args.champion);
         std::uint16_t net_target = 0xffff;
         float last_auto_attack = -100.0f;
         float last_auto_spell = -100.0f;
@@ -2580,7 +2587,7 @@ int main(int argc, char** argv) {
                                 seen_anim[state.id] = unit.anim;
                                 std::printf("  remote  : unit #%u -> %s\n", state.id,
                                             unit.anim.c_str());
-                                if (unit.anim == "spell2") {
+                                if (unit.anim == "spell2" && is_jinx(unit.model)) {
                                     Beam beam;
                                     beam.x0 = spawn.x + state.x;
                                     beam.z0 = spawn.z + state.z;
@@ -2615,7 +2622,8 @@ int main(int argc, char** argv) {
                     if (remote.id != own_unit) continue;
                     own_target_position = lolview::Vec3{remote.x, spawn.y, remote.z};
                     own_anim = remote.anim;
-                    if (own_anim == "spell2" && last_own_anim != "spell2") {
+                    if (own_champion_has_beam && own_anim == "spell2" &&
+                        last_own_anim != "spell2") {
                         Beam beam;
                         beam.x0 = champion_position.x;
                         beam.z0 = champion_position.z;
