@@ -44,9 +44,9 @@ struct Unit {
     float max_hp = 100.0f;
     int team = 0;
     bool dead = false;
-    lolview::net::AnimState anim = lolview::net::AnimState::Idle;
-    lolview::net::AnimState action_state = lolview::net::AnimState::Idle;
-    float action_timer = 0.0f;  // seconds of attack/cast left to play
+    std::string anim = "idle1";       // what the host wants clients to play
+    std::string action_anim;          // override while an action resolves
+    float action_timer = 0.0f;        // seconds of that action left
     float prev_x = 0.0f;
     float prev_z = 0.0f;
     std::vector<std::pair<float, float>> path;  // remaining waypoints
@@ -205,6 +205,23 @@ void push_unit(lua_State* state, const Unit& unit) {
     lua_setfield(state, -2, "max_hp");
     lua_pushinteger(state, unit.team);
     lua_setfield(state, -2, "team");
+    lua_pushstring(state, unit.model.c_str());
+    lua_setfield(state, -2, "model");
+    lua_pushstring(state, unit.anim.c_str());
+    lua_setfield(state, -2, "anim");
+}
+
+int world_play_anim(lua_State* state) {
+    World& world = world_from(state);
+    const auto id = static_cast<std::uint16_t>(luaL_checkinteger(state, 1));
+    const char* name = luaL_checkstring(state, 2);
+    const float seconds =
+        lua_isnumber(state, 3) ? static_cast<float>(lua_tonumber(state, 3)) : 1.0f;
+    if (Unit* unit = world.find(id)) {
+        unit->action_anim = name;
+        unit->action_timer = seconds;
+    }
+    return 0;
 }
 
 int world_player_unit(lua_State* state) {
@@ -271,7 +288,7 @@ int world_on_tick(lua_State* state) {
 void register_world(lua_State* state, World& world) {
     static const luaL_Reg functions[] = {
         {"spawn", world_spawn}, {"set_hp", world_set_hp},       {"move", world_move},
-        {"unit", world_unit},   {"count", world_count}, {"units", world_units}, {"player_unit", world_player_unit},         {"log", world_log},
+        {"unit", world_unit},   {"count", world_count}, {"units", world_units}, {"player_unit", world_player_unit}, {"play_anim", world_play_anim},         {"log", world_log},
         {"on_tick", world_on_tick}, {"damage", world_damage},   {"remove", world_remove},
         {"time", world_time},       {"on_intent", world_on_intent}, {nullptr, nullptr},
     };
@@ -510,14 +527,15 @@ int main(int argc, char** argv) {
                             // Attacks and casts are resolved by the game mode, and
                             // put the unit into an action state the clients can see.
                             if (intent->kind == lolview::net::IntentKind::Attack) {
-                                unit->action_state = lolview::net::AnimState::Attack;
+                                unit->action_anim = "attack1";
                                 unit->action_timer = 0.9f;
                                 if (const Unit* victim = world.find(intent->target)) {
                                     unit->yaw = std::atan2(victim->x - unit->x,
                                                            victim->z - unit->z);
                                 }
                             } else {
-                                unit->action_state = lolview::net::AnimState::Cast;
+                                unit->action_anim = "spell" +
+                                                   std::to_string(static_cast<int>(intent->slot) + 1);
                                 unit->action_timer = 1.2f;
                                 unit->yaw = std::atan2(intent->x - unit->x,
                                                        intent->z - unit->z);
@@ -575,21 +593,21 @@ int main(int argc, char** argv) {
         // Animation state is decided by the host, never by the client.
         for (auto& unit : world.units) {
             if (unit.dead) {
-                unit.anim = lolview::net::AnimState::Dead;
+                unit.anim = "dead";
                 continue;
             }
             if (unit.action_timer > 0.0f) {
                 unit.action_timer -= kTickSeconds;
-                unit.anim = unit.action_state;
+                unit.anim = unit.action_anim;
                 continue;
             }
             const float dx = unit.x - unit.prev_x;
             const float dz = unit.z - unit.prev_z;
             if ((dx * dx + dz * dz) > 0.25f) {
-                unit.anim = lolview::net::AnimState::Run;
+                unit.anim = "run";
                 unit.yaw = std::atan2(dx, dz);
             } else {
-                unit.anim = lolview::net::AnimState::Idle;
+                unit.anim = "idle1";
             }
         }
         ++world.tick;

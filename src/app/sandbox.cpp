@@ -1705,7 +1705,7 @@ int main(int argc, char** argv) {
         bool connected = false;
         std::uint16_t local_player = 0;
         std::uint16_t own_unit = 0;
-        int own_anim = 0;  // host-assigned animation state for our unit
+        std::string own_anim = "idle1";  // animation the host assigned to us
         // Where the host says our unit is; the camera glides towards this instead
         // of snapping to each 20 Hz snapshot.
         lolview::Vec3 own_target_position = spawn;
@@ -1715,7 +1715,7 @@ int main(int argc, char** argv) {
             std::string model;
             float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, hp = 0.0f, max_hp = 0.0f;
             int team = 0;
-            int anim = 0;  // host-assigned AnimState
+            std::string anim;  // animation name the host wants played
         };
         std::vector<RemoteUnit> remote_units;
         // unit id -> champion name, straight from the host roster.
@@ -2264,7 +2264,7 @@ int main(int argc, char** argv) {
                 // The host decides whether we are running; distance-based
                 // detection flickered between run and idle every time the client
                 // caught up with the snapshot.
-                moving = (own_anim == 1);
+                moving = (own_anim == "run");
             } else if (has_move_target && attack_hold <= 0.0f) {
                 lolview::Vec3 delta = move_target - champion_position;
                 delta.y = 0.0f;
@@ -2548,7 +2548,7 @@ int main(int argc, char** argv) {
                             unit.hp = state.hp;
                             unit.max_hp = state.max_hp;
                             unit.team = state.team;
-                            unit.anim = static_cast<int>(state.anim);
+                            unit.anim = state.anim;
                             // Smoothing works in world space, like the draw code.
                             auto& smooth = remote_smooth[state.id];
                             smooth.target_x = spawn.x + state.x;
@@ -2560,13 +2560,11 @@ int main(int argc, char** argv) {
                                 smooth.z = smooth.target_z;
                                 smooth.yaw = state.yaw;
                             }
-                            static std::map<std::uint16_t, int> seen_anim;
+                            static std::map<std::uint16_t, std::string> seen_anim;
                             if (state.id != own_unit && seen_anim[state.id] != unit.anim) {
                                 seen_anim[state.id] = unit.anim;
-                                static const char* names[] = {"Idle", "Run", "Attack", "Cast",
-                                                              "Dead"};
                                 std::printf("  remote  : unit #%u -> %s\n", state.id,
-                                            names[unit.anim < 5 ? unit.anim : 0]);
+                                            unit.anim.c_str());
                             }
                             if (unit_models.find(unit.model) == unit_models.end()) {
                                 load_extra_model(unit.model);
@@ -2743,10 +2741,7 @@ int main(int argc, char** argv) {
                     if (auto* asset = load_remote_champion(remote.model)) {
                         remote_mesh = &asset->mesh;
                         remote_texture = asset->has_texture ? &asset->texture : nullptr;
-                        const char* action = remote.anim == 1   ? "run"
-                                             : remote.anim == 2 ? "attack1"
-                                             : remote.anim == 3 ? "spell1"
-                                                                : "idle1";
+                        const std::string& action = remote.anim;
                         auto clip_it = asset->clips.find(action);
                         if (clip_it == asset->clips.end()) clip_it = asset->clips.find("idle1");
                         float& phase = remote_phase[remote.id];
@@ -2778,7 +2773,7 @@ int main(int argc, char** argv) {
                     remote_texture = has_texture ? &texture : nullptr;
                     remote_bones = &bones;
                     // Play the clip the host assigned to this unit.
-                    const char* action = remote.anim == 1 ? "run" : "idle1";
+                    const std::string& action = remote.anim.empty() ? "idle1" : remote.anim;
                     if (const auto* clip = compressed_for(action)) {
                         float& phase = remote_phase[remote.id];
                         const float t = std::fmod(phase, std::max(clip->duration, 0.01f));

@@ -188,7 +188,7 @@ std::vector<std::uint8_t> encode(const Snapshot& message) {
         writer.f32(unit.hp);
         writer.f32(unit.max_hp);
         writer.u8(unit.team);
-        writer.u8(static_cast<std::uint8_t>(unit.anim));
+        writer.str(unit.anim);
     }
     return writer.finish(MessageType::Snapshot);
 }
@@ -295,7 +295,7 @@ std::optional<Snapshot> decode_snapshot(std::span<const std::uint8_t> bytes) {
         unit.hp = reader.f32();
         unit.max_hp = reader.f32();
         unit.team = reader.u8();
-        unit.anim = static_cast<AnimState>(reader.u8());
+        unit.anim = reader.str();
         snapshot.units.push_back(unit);
     }
     if (!reader.ok()) return std::nullopt;

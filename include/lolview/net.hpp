@@ -14,7 +14,7 @@ namespace lolview::net {
 //   WELCOME  server -> client : player id, tick, model table
 //   INTENT   client -> server : player, kind (move/attack/cast), slot, target
 //   SNAPSHOT server -> client : tick + one record per unit
-constexpr std::uint32_t kProtocolVersion = 3;
+constexpr std::uint32_t kProtocolVersion = 4;
 constexpr const char* kMagic = "LVN1";
 
 enum class MessageType : std::uint8_t {
@@ -25,14 +25,7 @@ enum class MessageType : std::uint8_t {
     Players = 5,  // roster: which champion each player's unit is
 };
 
-// Animation state the host assigns to a unit; the client plays what it is told.
-enum class AnimState : std::uint8_t {
-    Idle = 0,
-    Run = 1,
-    Attack = 2,
-    Cast = 3,
-    Dead = 4,
-};
+
 
 enum class IntentKind : std::uint8_t {
     Move = 0,
@@ -86,7 +79,9 @@ struct UnitState {
     float hp = 0.0f;
     float max_hp = 0.0f;
     std::uint8_t team = 0;
-    AnimState anim = AnimState::Idle;
+    // Animation the host wants this unit to play, by name ("run", "spell2").
+    // Clients resolve the name against their own clip naming.
+    std::string anim;
 };
 
 struct Snapshot {

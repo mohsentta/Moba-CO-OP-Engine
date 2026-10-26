@@ -565,7 +565,7 @@ void test_net() {
     unit.hp = 100.0f;
     unit.max_hp = 200.0f;
     unit.team = 1;
-    unit.anim = AnimState::Run;
+    unit.anim = "run";
     snapshot.units.push_back(unit);
 
     Players roster;
@@ -588,7 +588,7 @@ void test_net() {
         CHECK_EQ(snapshot_back->units.size(), std::size_t{1});
         CHECK_EQ(snapshot_back->units[0].id, std::uint16_t{5});
         CHECK_EQ(snapshot_back->units[0].team, std::uint8_t{1});
-        CHECK(snapshot_back->units[0].anim == AnimState::Run);
+        CHECK_EQ(snapshot_back->units[0].anim, std::string("run"));
     }
 
     // Truncated or mistyped datagrams must be rejected, not read past their end.
