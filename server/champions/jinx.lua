@@ -9,8 +9,8 @@ local jinx = { name = "Jinx" }
 -- slot 0..3 = Q W E R
 jinx.spells = {
   [0] = { anim = "spell1", cooldown = 7.0, damage = 100, radius = 250 },
-  -- W: 0.5 s charge, then a long thin line from the caster towards the aim.
-  [1] = { anim = "spell2", cooldown = 9.0, delay = 0.5, damage = 120, length = 2000,
+  -- W: 1.0 s charge, then a long thin line from the caster towards the aim.
+  [1] = { anim = "spell2", cooldown = 9.0, delay = 1.0, damage = 120, length = 2000,
           width = 240 },
   [2] = { anim = "spell3", cooldown = 14.0, damage = 80, radius = 300 },
   [3] = { anim = "spell4", cooldown = 120.0, damage = 300, radius = 420 },

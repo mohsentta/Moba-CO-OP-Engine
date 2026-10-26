@@ -1706,6 +1706,10 @@ int main(int argc, char** argv) {
         std::uint16_t local_player = 0;
         std::uint16_t own_unit = 0;
         std::string own_anim = "idle1";  // animation the host assigned to us
+        bool attack_chase = false;
+        std::uint16_t chase_target = 0xffff;
+        float last_attack_intent = -10.0f;
+        float last_chase_move = -10.0f;
         // Where the host says our unit is; the camera glides towards this instead
         // of snapping to each 20 Hz snapshot.
         lolview::Vec3 own_target_position = spawn;
@@ -1985,6 +1989,7 @@ int main(int argc, char** argv) {
                         pick_ground(camera, mx, my, w, h, ground_point)) {
                         move_target = ground_point;
                         has_move_target = true;
+                        attack_chase = false;
                         if (connected) {
                             lolview::net::Intent intent;
                             intent.player_id = local_player;
@@ -2061,27 +2066,10 @@ int main(int argc, char** argv) {
                             break;
                         case SDL_SCANCODE_A:
                             if (editor_mode || path_edit) break;
-                            // Basic attack only when something is actually in range.
-                            if (net_target == 0xffff) break;
-                            ++attack_variant;
-                            attack_lock = 0.05f;
-                            if (connected) {
-                                lolview::net::Intent intent;
-                                intent.player_id = local_player;
-                                intent.kind = lolview::net::IntentKind::Attack;
-                                intent.target = net_target;
-                                net_socket.send_to(server_host, server_port,
-                                                   lolview::net::encode(intent));
-                            }
-                            // Commit: stop for a moment and face the target.
-                            attack_hold = 0.25f;
+                            // Attack-move: chase the closest enemy, then attack.
+                            attack_chase = true;
+                            chase_target = net_target;
                             has_move_target = false;
-                            for (const auto& remote : remote_units) {
-                                if (remote.id != net_target) continue;
-                                attack_facing_x = remote.x - champion_position.x;
-                                attack_facing_z = remote.z - champion_position.z;
-                                break;
-                            }
                             break;
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
@@ -2621,6 +2609,47 @@ int main(int argc, char** argv) {
                     break;
                 }
 
+                // Attack-move: walk to the target until in range, then swing.
+                if (attack_chase) {
+                    const RemoteUnit* target = nullptr;
+                    for (const auto& remote : remote_units) {
+                        if (remote.id != chase_target) continue;
+                        target = &remote;
+                        break;
+                    }
+                    if (target == nullptr || target->hp <= 0.0f) {
+                        attack_chase = false;
+                    } else {
+                        const float dx = target->x - champion_position.x;
+                        const float dz = target->z - champion_position.z;
+                        const float distance = std::sqrt(dx * dx + dz * dz);
+                        if (distance <= 560.0f) {
+                            if (elapsed - last_attack_intent >= 0.9f) {
+                                last_attack_intent = elapsed;
+                                ++attack_variant;
+                                attack_lock = 0.05f;
+                                attack_hold = 0.25f;
+                                attack_facing_x = dx;
+                                attack_facing_z = dz;
+                                lolview::net::Intent intent;
+                                intent.player_id = local_player;
+                                intent.kind = lolview::net::IntentKind::Attack;
+                                intent.target = target->id;
+                                net_socket.send_to(server_host, server_port,
+                                                   lolview::net::encode(intent));
+                            }
+                        } else if (elapsed - last_chase_move >= 0.35f) {
+                            last_chase_move = elapsed;
+                            lolview::net::Intent intent;
+                            intent.player_id = local_player;
+                            intent.kind = lolview::net::IntentKind::Move;
+                            intent.x = target->x - spawn.x;
+                            intent.z = target->z - spawn.z;
+                            net_socket.send_to(server_host, server_port,
+                                               lolview::net::encode(intent));
+                        }
+                    }
+                }
                 // Headless verification: attack the nearest enemy on a timer.
                 if (args.auto_attack > 0.0f && net_target != 0xffff &&
                     elapsed - last_auto_attack >= args.auto_attack) {

@@ -48,6 +48,7 @@ struct Unit {
     std::string action_anim;          // override while an action resolves
     float action_timer = 0.0f;        // seconds of that action left
     float rescue_cooldown = 0.0f;     // rate limit for pulling outside units in
+    float root_timer = 0.0f;          // cannot walk while casting or attacking
     float prev_x = 0.0f;
     float prev_z = 0.0f;
     std::vector<std::pair<float, float>> path;  // remaining waypoints
@@ -530,6 +531,7 @@ int main(int argc, char** argv) {
                             if (intent->kind == lolview::net::IntentKind::Attack) {
                                 unit->action_anim = "attack1";
                                 unit->action_timer = 0.9f;
+                                unit->root_timer = 0.35f;
                                 if (const Unit* victim = world.find(intent->target)) {
                                     unit->yaw = std::atan2(victim->x - unit->x,
                                                            victim->z - unit->z);
@@ -538,6 +540,7 @@ int main(int argc, char** argv) {
                                 unit->action_anim = "spell" +
                                                    std::to_string(static_cast<int>(intent->slot) + 1);
                                 unit->action_timer = 1.2f;
+                                unit->root_timer = 1.2f;
                                 unit->yaw = std::atan2(intent->x - unit->x,
                                                        intent->z - unit->z);
                             }
@@ -556,6 +559,12 @@ int main(int argc, char** argv) {
             unit.prev_z = unit.z;
         }
         const float walk_step = 380.0f * kTickSeconds;
+        for (auto& unit : world.units) {
+            if (unit.root_timer <= 0.0f) continue;
+            unit.root_timer -= kTickSeconds;
+            unit.path.clear();
+            unit.path_index = 0;
+        }
         // Players are never left outside the walkable area.
         if (world.grid.valid()) {
             for (auto& unit : world.units) {
