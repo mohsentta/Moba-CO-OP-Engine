@@ -2064,13 +2064,32 @@ int main(int argc, char** argv) {
                             if (editor_mode || path_edit) break;
                             start_cast(lolview::EffectKind::Spell4, 3, aim);
                             break;
-                        case SDL_SCANCODE_A:
+                        case SDL_SCANCODE_A: {
                             if (editor_mode || path_edit) break;
-                            // Attack-move: chase the closest enemy, then attack.
+                            // Attack-move: pick the enemy closest to the point under
+                            // the cursor and walk to it, attacking once in range.
+                            std::uint16_t best = 0xffff;
+                            float best_distance = 1e30f;
+                            for (const auto& remote : remote_units) {
+                                if (remote.team == 0 || remote.hp <= 0.0f) continue;
+                                const float dx = remote.x - aim.x;
+                                const float dz = remote.z - aim.z;
+                                const float distance = dx * dx + dz * dz;
+                                if (distance < best_distance) {
+                                    best_distance = distance;
+                                    best = remote.id;
+                                }
+                            }
+                            if (best == 0xffff) {
+                                std::printf("  attack  : no enemies on the map\n");
+                                break;
+                            }
                             attack_chase = true;
-                            chase_target = net_target;
+                            chase_target = best;
                             has_move_target = false;
+                            std::printf("  attack  : chasing unit #%u\n", best);
                             break;
+                        }
                         case SDL_SCANCODE_S:
                             // League's stop command (free camera uses S to fly back).
                             if (!free_mode) has_move_target = false;
