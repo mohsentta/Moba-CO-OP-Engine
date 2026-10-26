@@ -885,8 +885,11 @@ int main(int argc, char** argv) {
                 const auto bytes = resolve_first({base_dir + "Animations/" + stem + ".anm",
                                                   base_dir + "animations/" + stem + ".anm"});
                 if (!bytes) return;
+                std::string normalised = key;
+                std::transform(normalised.begin(), normalised.end(), normalised.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 try {
-                    clips[key].push_back(lolview::Anm::parse(*bytes));
+                    clips[normalised].push_back(lolview::Anm::parse(*bytes));
                 } catch (const std::exception& error) {
                     if (lolview::is_compressed_animation(*bytes)) {
                         try {
@@ -896,7 +899,7 @@ int main(int argc, char** argv) {
                                 stem.c_str(), anim.joint_count, anim.frame_count,
                                 anim.duration);
                             compressed_clips.push_back(anim);
-                            g_compressed_by_key[key].push_back(compressed_clips.size() - 1);
+                            g_compressed_by_key[normalised].push_back(compressed_clips.size() - 1);
                         } catch (const std::exception& nested) {
                             std::fprintf(stderr, "warning: %s.anm compressed parse failed: %s\n",
                                          stem.c_str(), nested.what());
@@ -1741,6 +1744,12 @@ int main(int argc, char** argv) {
             float life = 0.0f;
         };
         std::vector<Beam> beams;
+        // Orbs are drawn as small glowing circles until a real mesh exists.
+        struct OrbMark {
+            ImVec2 centre;
+            float radius = 7.0f;
+        };
+        std::vector<OrbMark> orb_marks;
         std::string last_own_anim = "idle1";
         // The line-spell beam is Jinx's W; other champions must not borrow it.
         const auto is_jinx = [](std::string name) {
@@ -2351,7 +2360,13 @@ int main(int argc, char** argv) {
             };
 
             std::string desired;
-            if (!args.force_anim.empty()) {
+            // The host decides what our unit plays; only idle/run are handled
+            // locally (they already come from the host state).
+            const bool host_action = connected && !own_anim.empty() && own_anim != "idle1" &&
+                                     own_anim != "run" && own_anim != "dead";
+            if (host_action) {
+                desired = own_anim;
+            } else if (!args.force_anim.empty()) {
                 desired = args.force_anim;  // --anim, for inspection
             } else if (cast_lock > 0.0f && !cast_action.empty()) {
                 desired = cast_action;
@@ -2817,6 +2832,26 @@ int main(int argc, char** argv) {
                 const lolview::Skn* remote_mesh = &dummy_mesh;
                 const lolview::TexImage* remote_texture = nullptr;
                 const std::vector<lolview::Mat4>* remote_bones = nullptr;
+                float draw_x = remote.x;
+                float draw_z = remote.z;
+                float draw_yaw = remote.yaw;
+                const auto smooth_it = remote_smooth.find(remote.id);
+                if (smooth_it != remote_smooth.end()) {
+                    draw_x = smooth_it->second.x;
+                    draw_z = smooth_it->second.z;
+                    draw_yaw = smooth_it->second.yaw;
+                }
+
+                if (remote.model == "orb") {
+                    float sx = 0.0f, sy = 0.0f;
+                    if (project_to_screen(view, proj,
+                                          lolview::Vec3{draw_x, remote.y + 55.0f, draw_z}, w, h,
+                                          sx, sy)) {
+                        orb_marks.push_back(OrbMark{ImVec2(sx, sy), 7.0f});
+                    }
+                    continue;
+                }
+
                 std::vector<lolview::Mat4> remote_bones_storage;
                 if (remote.model != args.champion && remote.model != "champion" &&
                     remote.model != "minion" && remote.model != "pet") {
@@ -2869,15 +2904,6 @@ int main(int argc, char** argv) {
                     if (mesh_it != unit_models.end()) remote_mesh = mesh_it->second;
                     const auto texture_it = unit_textures.find(remote.model);
                     if (texture_it != unit_textures.end()) remote_texture = texture_it->second;
-                }
-                float draw_x = remote.x;
-                float draw_z = remote.z;
-                float draw_yaw = remote.yaw;
-                const auto smooth_it = remote_smooth.find(remote.id);
-                if (smooth_it != remote_smooth.end()) {
-                    draw_x = smooth_it->second.x;
-                    draw_z = smooth_it->second.z;
-                    draw_yaw = smooth_it->second.yaw;
                 }
 
                 renderer.draw_scene(*remote_mesh, remote_texture, remote_bones, nullptr,
@@ -3017,6 +3043,13 @@ int main(int argc, char** argv) {
             }
 
             ImDrawList* draw = ImGui::GetBackgroundDrawList();
+            for (const auto& orb : orb_marks) {
+                draw->AddCircleFilled(orb.centre, orb.radius * 2.0f,
+                                      IM_COL32(120, 200, 255, 60));
+                draw->AddCircleFilled(orb.centre, orb.radius, IM_COL32(190, 235, 255, 230));
+            }
+            orb_marks.clear();
+
             // Line-spell beams (decay quickly).
             for (std::size_t i = 0; i < beams.size();) {
                 Beam& beam = beams[i];
