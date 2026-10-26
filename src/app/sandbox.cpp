@@ -1730,6 +1730,14 @@ int main(int argc, char** argv) {
             bool initialised = false;
         };
         std::map<std::uint16_t, RemoteSmooth> remote_smooth;
+        // Short-lived beams drawn when a unit plays a line spell (Jinx W), so a
+        // cast is visible even before real VFX are wired up.
+        struct Beam {
+            float x0 = 0.0f, z0 = 0.0f, x1 = 0.0f, z1 = 0.0f;
+            float life = 0.0f;
+        };
+        std::vector<Beam> beams;
+        std::string last_own_anim = "idle1";
         std::uint16_t net_target = 0xffff;
         float last_auto_attack = -100.0f;
         float last_auto_spell = -100.0f;
@@ -2565,6 +2573,15 @@ int main(int argc, char** argv) {
                                 seen_anim[state.id] = unit.anim;
                                 std::printf("  remote  : unit #%u -> %s\n", state.id,
                                             unit.anim.c_str());
+                                if (unit.anim == "spell2") {
+                                    Beam beam;
+                                    beam.x0 = spawn.x + state.x;
+                                    beam.z0 = spawn.z + state.z;
+                                    beam.x1 = beam.x0 + std::sin(state.yaw) * 2000.0f;
+                                    beam.z1 = beam.z0 + std::cos(state.yaw) * 2000.0f;
+                                    beam.life = 0.3f;
+                                    beams.push_back(beam);
+                                }
                             }
                             if (unit_models.find(unit.model) == unit_models.end()) {
                                 load_extra_model(unit.model);
@@ -2591,6 +2608,16 @@ int main(int argc, char** argv) {
                     if (remote.id != own_unit) continue;
                     own_target_position = lolview::Vec3{remote.x, spawn.y, remote.z};
                     own_anim = remote.anim;
+                    if (own_anim == "spell2" && last_own_anim != "spell2") {
+                        Beam beam;
+                        beam.x0 = champion_position.x;
+                        beam.z0 = champion_position.z;
+                        beam.x1 = beam.x0 + std::sin(champion_yaw) * 2000.0f;
+                        beam.z1 = beam.z0 + std::cos(champion_yaw) * 2000.0f;
+                        beam.life = 0.3f;
+                        beams.push_back(beam);
+                    }
+                    last_own_anim = own_anim;
                     break;
                 }
 
@@ -2934,6 +2961,26 @@ int main(int argc, char** argv) {
             }
 
             ImDrawList* draw = ImGui::GetBackgroundDrawList();
+            // Line-spell beams (decay quickly).
+            for (std::size_t i = 0; i < beams.size();) {
+                Beam& beam = beams[i];
+                beam.life -= dt;
+                if (beam.life <= 0.0f) {
+                    beams.erase(beams.begin() + static_cast<std::ptrdiff_t>(i));
+                    continue;
+                }
+                float ax = 0, ay = 0, bx = 0, by = 0;
+                if (project_to_screen(view, proj, lolview::Vec3{beam.x0, spawn.y + 60.0f, beam.z0},
+                                      w, h, ax, ay) &&
+                    project_to_screen(view, proj, lolview::Vec3{beam.x1, spawn.y + 60.0f, beam.z1},
+                                      w, h, bx, by)) {
+                    const int alpha = static_cast<int>(255.0f * std::min(1.0f, beam.life * 4.0f));
+                    draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by),
+                                  IM_COL32(120, 230, 255, alpha), 5.0f);
+                }
+                ++i;
+            }
+
             // Obstacles are drawn in red on top of the walkable outline.
             if (path_edit && !blocked_path.empty()) {
                 for (std::size_t i = 0; i + 1 < blocked_path.size(); ++i) {

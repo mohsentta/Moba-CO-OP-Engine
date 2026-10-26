@@ -47,6 +47,7 @@ struct Unit {
     std::string anim = "idle1";       // what the host wants clients to play
     std::string action_anim;          // override while an action resolves
     float action_timer = 0.0f;        // seconds of that action left
+    float rescue_cooldown = 0.0f;     // rate limit for pulling outside units in
     float prev_x = 0.0f;
     float prev_z = 0.0f;
     std::vector<std::pair<float, float>> path;  // remaining waypoints
@@ -559,7 +560,19 @@ int main(int argc, char** argv) {
         if (world.grid.valid()) {
             for (auto& unit : world.units) {
                 if (unit.team != 0) continue;
-                if (world.area.contains(unit.x, unit.z)) continue;
+                if (world.area.contains(unit.x, unit.z)) {
+                    unit.rescue_cooldown = 0.0f;
+                    continue;
+                }
+                // Pull towards the nearest walkable cell centre, and rate-limit it
+                // so a unit on a thin edge is nudged inside instead of being
+                // teleported to the same spot every tick (which cleared its path
+                // forever and looked like being stuck).
+                if (unit.rescue_cooldown > 0.0f) {
+                    unit.rescue_cooldown -= kTickSeconds;
+                    continue;
+                }
+                unit.rescue_cooldown = 0.5f;
                 float inside_x = 0.0f, inside_z = 0.0f;
                 if (world.grid.nearest_walkable(unit.x, unit.z, inside_x, inside_z)) {
                     std::printf("server: unit #%u outside the area at (%.0f, %.0f), pulled to (%.0f, %.0f)\n",

@@ -137,11 +137,6 @@ bool NavGrid::point_walkable(float x, float z) const {
 bool NavGrid::nearest_walkable(float x, float z, float& out_x, float& out_z) const {
     if (!valid()) return false;
     const auto [start_cx, start_cz] = cell_of(x, z);
-    if (cell_walkable(start_cx, start_cz)) {
-        out_x = x;
-        out_z = z;
-        return true;
-    }
 
     // Expanding ring search around the start cell.
     const int max_radius = std::max(width_, height_);
