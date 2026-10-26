@@ -32,7 +32,7 @@ constexpr float kSnapshotSeconds = 1.0f / 20.0f;
 
 // Model names a unit may use. Indices travel on the wire; the client resolves
 // them through the same table sent in WELCOME.
-const std::vector<std::string> kModels = {"champion", "pet", "minion", "cube"};
+const std::vector<std::string> kModels = {"champion", "pet", "minion", "cube", "orb"};
 
 struct Unit {
     std::uint16_t id = 0;
@@ -142,6 +142,10 @@ int world_unit(lua_State* state) {
         return 1;
     }
     lua_newtable(state);
+    lua_pushinteger(state, unit->id);
+    lua_setfield(state, -2, "id");
+    lua_pushstring(state, unit->model.c_str());
+    lua_setfield(state, -2, "model");
     lua_pushnumber(state, unit->x);
     lua_setfield(state, -2, "x");
     lua_pushnumber(state, unit->z);
@@ -568,7 +572,9 @@ int main(int argc, char** argv) {
         // Players are never left outside the walkable area.
         if (world.grid.valid()) {
             for (auto& unit : world.units) {
-                if (unit.team != 0) continue;
+                // Only champions are confined to the walkable area; projectiles and
+                // orbs must be free to travel to their targets.
+                if (unit.team != 0 || unit.model != "champion") continue;
                 if (world.area.contains(unit.x, unit.z)) {
                     unit.rescue_cooldown = 0.0f;
                     continue;

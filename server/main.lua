@@ -168,4 +168,12 @@ world.on_tick(function(dt)
   end
 
   run_pending()
+
+  -- Let champion modules advance their own state (orbits, projectiles, ...).
+  for _, module in pairs(champions) do
+    if module and module.on_tick then
+      local ok, err = pcall(module.on_tick, world, dt)
+      if not ok then world.log("on_tick failed: " .. tostring(err)) end
+    end
+  end
 end)
